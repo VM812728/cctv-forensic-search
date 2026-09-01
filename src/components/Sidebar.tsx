@@ -14,7 +14,9 @@ import {
   ShieldCheck,
   CheckCircle2,
   AlertTriangle,
-  Download
+  Download,
+  LogOut,
+  UserCheck
 } from 'lucide-react';
 import { User } from '../types';
 
@@ -28,7 +30,8 @@ export type NavTab =
   | 'reports'
   | 'system_info'
   | 'settings'
-  | 'audit_logs';
+  | 'audit_logs'
+  | 'users';
 
 interface SidebarProps {
   activeTab: NavTab;
@@ -38,6 +41,7 @@ interface SidebarProps {
   totalClipsCount: number;
   unindexedVideosCount: number;
   onSwitchUser: () => void;
+  onLogout?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -48,13 +52,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
   totalClipsCount,
   unindexedVideosCount,
   onSwitchUser,
+  onLogout,
 }) => {
+  const isAdmin = currentUser.role === 'Admin';
+
   const navItems: Array<{
     id: NavTab;
     label: string;
     icon: React.ElementType;
-    badge?: number;
+    badge?: number | string;
     badgeColor?: string;
+    adminOnly?: boolean;
   }> = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'new_search', label: 'New Candidate Search', icon: UserPlus },
@@ -81,6 +89,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/30'
     },
     { id: 'reports', label: 'Reports & Export', icon: FileSpreadsheet },
+    { 
+      id: 'users', 
+      label: 'User Management', 
+      icon: Users,
+      badge: isAdmin ? 'Admin' : undefined,
+      badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
+      adminOnly: true
+    },
     { id: 'system_info', label: 'System Hardware', icon: Cpu },
     { id: 'audit_logs', label: 'Audit Logs', icon: FileText },
     { id: 'settings', label: 'Settings', icon: Settings },
@@ -116,18 +132,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 key={item.id}
                 id={`nav-item-${item.id}`}
                 onClick={() => onTabChange(item.id)}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                   isActive
                     ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.15)] backdrop-blur-xs font-semibold'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent'
                 }`}
               >
-                <div className="flex items-center gap-2.5">
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-blue-400' : 'text-slate-400'}`} />
-                  <span>{item.label}</span>
+                <div className="flex items-center gap-2.5 truncate">
+                  <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-400' : 'text-slate-400'}`} />
+                  <span className="truncate">{item.label}</span>
                 </div>
                 {item.badge !== undefined && (
-                  <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border ${
+                  <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border shrink-0 ${
                     isActive ? 'bg-blue-500/30 text-blue-300 border-blue-400/40' : item.badgeColor
                   }`}>
                     {item.badge}
@@ -139,26 +155,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </nav>
       </div>
 
-      {/* Footer Info & User Switcher */}
+      {/* Footer Info & Current User */}
       <div className="p-3 border-t border-white/10 bg-white/[0.02] space-y-2">
         <div className="flex items-center justify-between px-2.5 py-2 rounded-lg bg-slate-900/60 border border-white/10 backdrop-blur-sm">
           <div className="flex items-center gap-2 overflow-hidden">
-            <div className="w-7 h-7 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400 font-bold text-xs">
-              {currentUser.username.substring(0, 2).toUpperCase()}
+            <div className="w-7 h-7 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400 font-bold text-xs shrink-0">
+              {currentUser.username ? currentUser.username.substring(0, 2).toUpperCase() : 'US'}
             </div>
             <div className="truncate">
-              <div className="text-[11px] font-semibold text-slate-200 truncate">{currentUser.fullName}</div>
+              <div className="text-[11px] font-semibold text-slate-200 truncate">{currentUser.fullName || currentUser.username}</div>
               <div className="text-[10px] text-slate-400 capitalize">{currentUser.role} Role</div>
             </div>
           </div>
-          <button
-            id="btn-switch-user"
-            onClick={onSwitchUser}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-white/10 transition-colors"
-            title="Switch User / Role"
-          >
-            <Users className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              id="btn-switch-user"
+              onClick={onSwitchUser}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-white/10 transition-colors cursor-pointer"
+              title="Switch User / Role"
+            >
+              <Users className="w-3.5 h-3.5" />
+            </button>
+            {onLogout && (
+              <button
+                id="btn-sidebar-logout"
+                onClick={onLogout}
+                className="p-1.5 rounded-lg text-rose-400 hover:text-rose-200 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                title="Sign Out / Lock Station"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="px-2 py-1 text-[10px] font-mono text-slate-500 flex items-center justify-between">
@@ -172,3 +200,4 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </aside>
   );
 };
+

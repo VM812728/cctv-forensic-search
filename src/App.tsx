@@ -11,8 +11,11 @@ import { CasesView } from './components/CasesView';
 import { AuditLogView } from './components/AuditLogView';
 import { SystemInfoView } from './components/SystemInfoView';
 import { SettingsView } from './components/SettingsView';
+import { UserManagementView } from './components/UserManagementView';
 import { BenchmarkModal } from './components/BenchmarkModal';
 import { WebcamModal } from './components/WebcamModal';
+import { LoginView } from './components/LoginView';
+import { AuthProvider, useAuth } from './context/AuthContext';
 
 import { 
   INITIAL_CASES, 
@@ -28,8 +31,20 @@ import {
 import { Case, SearchResultMatch, ClipEvidence, CCTVVideo, AppSettings, AuditLog, User, SearchJob } from './types';
 import { generateEvidenceHash } from './services/cryptoUtils';
 import { generatePdfReport } from './services/reportGenerator';
+import { Shield, ScanFace, Loader2, AlertCircle, ShieldAlert, X, Lock } from 'lucide-react';
 
-export function App() {
+function ForensicWorkstation() {
+  const { 
+    currentUser, 
+    isLoading, 
+    signOutUser, 
+    isAdmin,
+    isAuditor,
+    isViewer,
+    canPerform,
+    validatePermission
+  } = useAuth();
+
   // Navigation & Active States
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [cases, setCases] = useState<Case[]>(INITIAL_CASES);
@@ -39,8 +54,10 @@ export function App() {
   const [availableVideos, setAvailableVideos] = useState<CCTVVideo[]>(SAMPLE_CCTV_VIDEOS);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(INITIAL_AUDIT_LOGS);
-  const [currentUser, setCurrentUser] = useState<User>(INITIAL_USERS[0]);
   const [activeJobs, setActiveJobs] = useState<SearchJob[]>([]);
+
+  // Security Toast State for Blocked Operations
+  const [securityToast, setSecurityToast] = useState<{ id: string; title: string; message: string } | null>(null);
 
   // Modals
   const [showBenchmarkModal, setShowBenchmarkModal] = useState(false);
@@ -55,7 +72,8 @@ export function App() {
   const pendingReviewsCount = caseMatches.filter(m => m.reviewStatus === 'Pending').length;
   const unindexedVideosCount = availableVideos.filter(v => !v.isIndexed).length;
 
-  const logAudit = (action: string, details: string, caseId?: string) => {
+  const logAudit = (action: string, details: string, caseId?: string, severity: 'info' | 'warning' | 'security' = 'info') => {
+    if (!currentUser) return;
     const entry: AuditLog = {
       id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
@@ -63,21 +81,39 @@ export function App() {
       action,
       caseId,
       details,
-      severity: 'info',
+      severity,
     };
     setAuditLogs(prev => [entry, ...prev]);
   };
 
-  // Switch User Role
+  const triggerSecurityAlert = (title: string, message: string, caseId?: string) => {
+    logAudit('ACCESS_RESTRICTED', `${title}: ${message}`, caseId, 'security');
+    setSecurityToast({
+      id: `sec-${Date.now()}`,
+      title,
+      message,
+    });
+    setTimeout(() => {
+      setSecurityToast(prev => (prev?.message === message ? null : prev));
+    }, 4500);
+  };
+
+  // Switch / Manage User
   const handleSwitchUser = () => {
-    const nextIdx = (INITIAL_USERS.findIndex(u => u.id === currentUser.id) + 1) % INITIAL_USERS.length;
-    const nextUser = INITIAL_USERS[nextIdx];
-    setCurrentUser(nextUser);
-    logAudit('LOGIN', `User session switched to ${nextUser.username} (${nextUser.role})`);
+    if (!currentUser) return;
+    if (currentUser.role === 'Admin') {
+      setActiveTab('users');
+    }
   };
 
   // Handle Launch Search
   const handleStartSearch = (newCase: Case, selectedVideoIds: string[]) => {
+    if (!validatePermission('SEARCH_EXECUTE', (reason) => {
+      triggerSecurityAlert('Search Initiation Denied', reason, newCase.id);
+    })) {
+      return;
+    }
+
     setCases(prev => [newCase, ...prev]);
     setActiveCaseId(newCase.id);
 
@@ -194,12 +230,18 @@ export function App() {
 
   // Confirm Match Action
   const handleConfirmMatch = (matchId: string, notes?: string) => {
+    if (!validatePermission('MATCH_REVIEW', (reason) => {
+      triggerSecurityAlert('Review Confirmation Denied', reason, currentCase?.id);
+    })) {
+      return;
+    }
+
     setAllMatches(prev => prev.map(m => {
       if (m.id === matchId) {
         return {
           ...m,
           reviewStatus: 'Confirmed',
-          reviewer: currentUser.username,
+          reviewer: currentUser?.username || 'Auditor',
           reviewedAt: new Date().toISOString(),
           reviewNotes: notes || 'Confirmed by auditor',
         };
@@ -224,12 +266,18 @@ export function App() {
 
   // Reject Match Action
   const handleRejectMatch = (matchId: string, notes?: string) => {
+    if (!validatePermission('MATCH_REVIEW', (reason) => {
+      triggerSecurityAlert('Review Rejection Denied', reason, currentCase?.id);
+    })) {
+      return;
+    }
+
     setAllMatches(prev => prev.map(m => {
       if (m.id === matchId) {
         return {
           ...m,
           reviewStatus: 'Rejected',
-          reviewer: currentUser.username,
+          reviewer: currentUser?.username || 'Auditor',
           reviewedAt: new Date().toISOString(),
           reviewNotes: notes || 'Rejected by auditor',
         };
@@ -242,6 +290,12 @@ export function App() {
 
   // Generate Clip
   const handleGenerateClip = (matchId: string, preRoll: number, postRoll: number) => {
+    if (!validatePermission('CLIP_GENERATE', (reason) => {
+      triggerSecurityAlert('Clip Generation Denied', reason, currentCase?.id);
+    })) {
+      return;
+    }
+
     const match = allMatches.find(m => m.id === matchId);
     if (!match) return;
 
@@ -267,7 +321,7 @@ export function App() {
       sourceFileSha256: generateEvidenceHash('source', match.cameraName),
       appVersion: 'CCTV-Search-v1.0.0-win64',
       generatedAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      generatedBy: currentUser.username,
+      generatedBy: currentUser?.username || 'officer',
       caseCode: currentCase.caseCode,
       candidateRoll: currentCase.candidate?.rollNumber || 'EX-UNKNOWN',
     };
@@ -285,11 +339,17 @@ export function App() {
 
   // Generate all confirmed clips
   const handleGenerateAllConfirmedClips = () => {
+    if (!validatePermission('CLIP_GENERATE', (reason) => {
+      triggerSecurityAlert('Batch Clip Generation Denied', reason, currentCase?.id);
+    })) {
+      return;
+    }
+
     const confirmedMatches = caseMatches.filter(m => m.reviewStatus === 'Confirmed' && !m.clipGenerated);
     confirmedMatches.forEach(m => {
       handleGenerateClip(m.id, settings.preRollSeconds, settings.postRollSeconds);
     });
-    alert(`Generated ${confirmedMatches.length} new evidence clips with SHA-256 hashes.`);
+    logAudit('BATCH_CLIPS_GENERATED', `Generated ${confirmedMatches.length} evidence clips with SHA-256 hashes.`, currentCase?.id);
     setActiveTab('clips');
   };
 
@@ -310,7 +370,7 @@ export function App() {
       status: 'Review Required',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      createdBy: 'admin',
+      createdBy: currentUser?.username || 'admin',
       videoIds: availableVideos.map(v => v.id),
       totalMatchesCount: 4,
       confirmedMatchesCount: 1,
@@ -326,6 +386,12 @@ export function App() {
 
   // Index Video
   const handleIndexVideo = (videoId: string) => {
+    if (!validatePermission('VECTOR_INDEX', (reason) => {
+      triggerSecurityAlert('Vector Indexing Denied', reason);
+    })) {
+      return;
+    }
+
     setAvailableVideos(prev => prev.map(v => {
       if (v.id === videoId) {
         return {
@@ -341,6 +407,12 @@ export function App() {
   };
 
   const handleBulkIndex = () => {
+    if (!validatePermission('VECTOR_INDEX', (reason) => {
+      triggerSecurityAlert('Bulk Indexing Denied', reason);
+    })) {
+      return;
+    }
+
     setAvailableVideos(prev => prev.map(v => ({
       ...v,
       isIndexed: true,
@@ -351,11 +423,23 @@ export function App() {
   };
 
   const handleDeleteIndex = (videoId: string) => {
+    if (!validatePermission('DELETE_INDEX', (reason) => {
+      triggerSecurityAlert('Index Deletion Restricted', reason);
+    })) {
+      return;
+    }
+
     setAvailableVideos(prev => prev.map(v => v.id === videoId ? { ...v, isIndexed: false, facesDetectedCount: 0 } : v));
     logAudit('INDEX_DELETED', `Deleted vector cache index for video ${videoId}`);
   };
 
   const handleDeleteCase = (caseId: string) => {
+    if (!validatePermission('CASE_DELETE', (reason) => {
+      triggerSecurityAlert('Case Deletion Restricted', reason, caseId);
+    })) {
+      return;
+    }
+
     setCases(prev => prev.filter(c => c.id !== caseId));
     if (activeCaseId === caseId && cases.length > 1) {
       setActiveCaseId(cases.find(c => c.id !== caseId)?.id || '');
@@ -363,6 +447,45 @@ export function App() {
     logAudit('CASE_DELETED', `Deleted case ${caseId}`);
   };
 
+  const handleSaveSettings = (newSettings: AppSettings) => {
+    if (!validatePermission('SETTINGS_MODIFY', (reason) => {
+      triggerSecurityAlert('Settings Modification Restricted', reason);
+    })) {
+      return;
+    }
+
+    setSettings(newSettings);
+    logAudit('SETTINGS_UPDATED', 'Updated application thresholds and storage directory paths.');
+  };
+
+  // If loading authentication state, show polished splash screen
+  if (isLoading) {
+    return (
+      <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center text-slate-200 select-none">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-16 h-16 rounded-2xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400 shadow-[0_0_30px_rgba(59,130,246,0.3)] animate-pulse">
+            <ScanFace className="w-8 h-8 text-blue-400" />
+          </div>
+          <div className="text-center">
+            <h2 className="text-sm font-bold tracking-wider uppercase font-mono text-slate-100">
+              CCTV Forensic Workstation
+            </h2>
+            <p className="text-xs text-slate-400 mt-1 font-mono flex items-center justify-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+              <span>Verifying biometric security & session credentials...</span>
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // If not authenticated, render Login Page as the mandatory first screen
+  if (!currentUser) {
+    return <LoginView />;
+  }
+
+  // Render Authenticated Forensic Workstation
   return (
     <div id="cctv-forensic-workstation" className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 font-sans antialiased overflow-hidden select-none">
       {/* Top Windows Title Bar */}
@@ -374,6 +497,7 @@ export function App() {
         systemHardware={INITIAL_HARDWARE}
         onOpenSystemInfo={() => setActiveTab('system_info')}
         onOpenQuickDemo={handleLoadQuickDemo}
+        onLogout={signOutUser}
       />
 
       {/* Main App Canvas */}
@@ -387,6 +511,7 @@ export function App() {
           totalClipsCount={caseClips.length}
           unindexedVideosCount={unindexedVideosCount}
           onSwitchUser={handleSwitchUser}
+          onLogout={signOutUser}
         />
 
         {/* Center Content View Area */}
@@ -466,6 +591,10 @@ export function App() {
             />
           )}
 
+          {activeTab === 'users' && (
+            <UserManagementView />
+          )}
+
           {activeTab === 'audit_logs' && (
             <AuditLogView logs={auditLogs} />
           )}
@@ -480,14 +609,44 @@ export function App() {
           {activeTab === 'settings' && (
             <SettingsView
               settings={settings}
-              onSaveSettings={(newSettings) => {
-                setSettings(newSettings);
-                logAudit('SETTINGS_UPDATED', 'Updated application thresholds and storage directory paths.');
-              }}
+              onSaveSettings={handleSaveSettings}
             />
           )}
         </main>
       </div>
+
+      {/* Security Restricted Action Toast */}
+      {securityToast && (
+        <div 
+          id="security-rbac-toast"
+          className="fixed bottom-6 right-6 z-50 max-w-md bg-slate-900 border border-amber-500/50 shadow-2xl rounded-xl p-4 text-slate-100 flex items-start gap-3.5 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3 duration-200"
+        >
+          <div className="w-9 h-9 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+            <ShieldAlert className="w-5 h-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400 font-mono">
+                {securityToast.title}
+              </h4>
+              <button 
+                onClick={() => setSecurityToast(null)}
+                className="text-slate-400 hover:text-slate-200 transition-colors p-0.5 rounded"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+              {securityToast.message}
+            </p>
+            <div className="mt-2.5 pt-2 border-t border-slate-800 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+              <span>Active Role: <strong className="text-slate-200">{currentUser?.role || 'Unknown'}</strong></span>
+              <span className="text-amber-400/80 font-medium">Logged to Audit Trail</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Benchmark Modal */}
       {showBenchmarkModal && (
@@ -505,6 +664,14 @@ export function App() {
         />
       )}
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <AuthProvider>
+      <ForensicWorkstation />
+    </AuthProvider>
   );
 }
 

@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile for CCTV candidate identification station with role-based access control.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user."
+        },
+        "name": {
+          "type": "string",
+          "description": "Full display name of the user.",
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Email address of the user.",
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "enum": ["Admin", "Auditor", "Viewer"],
+          "description": "Role determining forensic permissions."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Active", "Disabled"],
+          "description": "Operational status of the account."
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Account registration timestamp."
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "description": "Timestamp of most recent authentication."
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Optional profile avatar URL.",
+          "maxLength": 500
+        }
+      },
+      "required": ["uid", "name", "email", "role", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Collection storing user profiles and forensic role definitions."
+    }
+  }
+}

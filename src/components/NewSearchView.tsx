@@ -15,10 +15,14 @@ import {
   ShieldCheck,
   Eye,
   Zap,
-  Info
+  Info,
+  Loader2,
+  ScanFace,
+  ServerCrash
 } from 'lucide-react';
-import { Case, Candidate, CCTVVideo, AppSettings, CandidatePhotoQuality } from '../types';
+import { Case, Candidate, CCTVVideo, AppSettings, CandidatePhotoQuality, DetectedFaceInfo } from '../types';
 import { analyzeCandidatePhotoQuality } from '../services/faceAnalysisEngine';
+import { generateCandidateEmbedding, BackendConnectionError } from '../services/api';
 import { SAMPLE_CANDIDATES, SAMPLE_CCTV_VIDEOS } from '../services/mockData';
 
 interface NewSearchViewProps {
@@ -48,6 +52,10 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
   const [photoUrl, setPhotoUrl] = useState<string>(SAMPLE_CANDIDATES[0].photoUrl);
   const [photoQuality, setPhotoQuality] = useState<CandidatePhotoQuality>(SAMPLE_CANDIDATES[0].photoQuality);
   const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
+  const [isGeneratingEmbedding, setIsGeneratingEmbedding] = useState(false);
+  const [embeddingMessage, setEmbeddingMessage] = useState<string | null>(null);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Appearance Fallback Tags
@@ -72,9 +80,51 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
   const handlePhotoSelect = async (url: string) => {
     setPhotoUrl(url);
     setIsAnalyzingPhoto(true);
-    const quality = await analyzeCandidatePhotoQuality(url);
-    setPhotoQuality(quality);
-    setIsAnalyzingPhoto(false);
+    setBackendError(null);
+    setEmbeddingMessage(null);
+
+    try {
+      const quality = await analyzeCandidatePhotoQuality(url);
+      setPhotoQuality(quality);
+      
+      if (quality.detectedFaces && quality.detectedFaces.length > 0) {
+        const firstFace = quality.detectedFaces[0];
+        setSelectedFaceId(firstFace.face_id);
+
+        // Generate real normalized embedding vector for the verified face
+        setIsGeneratingEmbedding(true);
+        try {
+          const emb = await generateCandidateEmbedding(url, firstFace.bounding_box, firstFace.face_id);
+          setEmbeddingMessage(emb.message);
+        } catch (embErr: any) {
+          console.warn('Embedding extraction notice:', embErr);
+        } finally {
+          setIsGeneratingEmbedding(false);
+        }
+      }
+    } catch (err: any) {
+      console.error('Candidate face analysis failed:', err);
+      if (err instanceof BackendConnectionError || err.message?.includes('FastAPI backend')) {
+        setBackendError('Cannot connect to local FastAPI backend on http://localhost:8000. Please ensure the backend is running with start_backend.bat.');
+      } else {
+        setBackendError(err.message || 'Failed to process candidate photo.');
+      }
+    } finally {
+      setIsAnalyzingPhoto(false);
+    }
+  };
+
+  const handleSelectFace = async (face: DetectedFaceInfo) => {
+    setSelectedFaceId(face.face_id);
+    setIsGeneratingEmbedding(true);
+    try {
+      const emb = await generateCandidateEmbedding(photoUrl, face.bounding_box, face.face_id);
+      setEmbeddingMessage(`Selected Face (${face.face_width_px}x${face.face_height_px}px): ${emb.message}`);
+    } catch (embErr: any) {
+      console.warn('Embedding extraction notice:', embErr);
+    } finally {
+      setIsGeneratingEmbedding(false);
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -316,6 +366,16 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
             <span className="text-xs font-mono text-slate-400 bg-white/5 border border-white/10 px-2.5 py-0.5 rounded-full">Step 2 of 4</span>
           </div>
 
+          {backendError && (
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300 flex items-start gap-2.5">
+              <ServerCrash className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="block text-red-200 font-medium">FastAPI Backend Connection Notice:</strong>
+                <span>{backendError}</span>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Left: Upload & Drag-and-drop zone */}
             <div 
@@ -338,6 +398,14 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
                     alt="Candidate Preview"
                     className="w-36 h-44 object-cover rounded-xl border border-white/20 shadow-lg"
                   />
+                  
+                  {isAnalyzingPhoto && (
+                    <div className="absolute inset-0 bg-slate-950/80 rounded-xl flex flex-col items-center justify-center text-xs font-mono text-blue-300 gap-2 backdrop-blur-xs">
+                      <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
+                      <span>Detecting Faces...</span>
+                    </div>
+                  )}
+
                   <div className="absolute inset-0 bg-black/60 rounded-xl opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity backdrop-blur-xs">
                     <button
                       type="button"
@@ -386,20 +454,38 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
                   <span>Biometric Quality Inspection</span>
                 </span>
                 <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border backdrop-blur-xs ${
-                  photoQuality.isQualityGood 
+                  photoQuality.qualityLabel === 'GOOD'
                     ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' 
+                    : photoQuality.qualityLabel === 'FAIR'
+                    ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
                     : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                 }`}>
-                  {photoQuality.isQualityGood ? 'OPTIMAL' : 'WARNING'}
+                  {photoQuality.qualityLabel || (photoQuality.isQualityGood ? 'GOOD' : 'FAIR')}
                 </span>
               </div>
 
               <div className="space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Single Face Detected:</span>
-                  <span className="font-semibold text-emerald-400 font-mono flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Exact 1 Face
+                  <span className="text-slate-400">Faces Detected:</span>
+                  <span className={`font-semibold font-mono flex items-center gap-1 ${
+                    photoQuality.faceCount === 1 ? 'text-emerald-400' : photoQuality.faceCount > 1 ? 'text-blue-400' : 'text-rose-400'
+                  }`}>
+                    {photoQuality.faceCount === 1 ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Exact 1 Face
+                      </>
+                    ) : photoQuality.faceCount > 1 ? (
+                      <>
+                        <ScanFace className="w-3.5 h-3.5" />
+                        {photoQuality.faceCount} Faces (Select candidate)
+                      </>
+                    ) : (
+                      <>
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        0 Faces Found
+                      </>
+                    )}
                   </span>
                 </div>
 
@@ -409,8 +495,8 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Face Size:</span>
-                  <span className="font-mono text-slate-200">{photoQuality.faceWidthPx}px ({photoQuality.facePercentage}% area)</span>
+                  <span className="text-slate-400">Face Dimensions:</span>
+                  <span className="font-mono text-slate-200">{photoQuality.faceWidthPx} × {photoQuality.faceHeightPx} px ({photoQuality.facePercentage}% area)</span>
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -424,6 +510,43 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
                 </div>
               </div>
 
+              {/* Multi-face selection list if multiple detected */}
+              {photoQuality.detectedFaces && photoQuality.detectedFaces.length > 1 && (
+                <div className="pt-2 border-t border-white/10">
+                  <span className="text-[11px] font-medium text-slate-300 block mb-1.5">Detected Faces ({photoQuality.detectedFaces.length}):</span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {photoQuality.detectedFaces.map((f, idx) => (
+                      <button
+                        key={f.face_id}
+                        type="button"
+                        onClick={() => handleSelectFace(f)}
+                        className={`p-1.5 rounded-lg border text-left text-[10px] font-mono transition-all cursor-pointer ${
+                          selectedFaceId === f.face_id
+                            ? 'bg-blue-600/30 border-blue-500 text-blue-200'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20'
+                        }`}
+                      >
+                        <div className="font-bold">Face #{idx + 1} ({f.quality_label})</div>
+                        <div className="text-slate-500">{f.face_width_px}x{f.face_height_px}px</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Embedding generation status */}
+              {isGeneratingEmbedding ? (
+                <div className="p-2 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[11px] text-blue-300 flex items-center gap-1.5">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                  <span>Computing 512-dim biometric embedding...</span>
+                </div>
+              ) : embeddingMessage ? (
+                <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="truncate">{embeddingMessage}</span>
+                </div>
+              ) : null}
+
               {photoQuality.warnings.length > 0 ? (
                 <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 flex items-start gap-1.5">
                   <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
@@ -434,7 +557,7 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
               ) : (
                 <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
-                  <span>Reference photo is suitable for local ONNX vector embedding.</span>
+                  <span>Reference photo is verified for local ONNX vector embedding.</span>
                 </div>
               )}
             </div>

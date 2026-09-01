@@ -1,108 +1,50 @@
 import { CandidatePhotoQuality, SearchResultMatch, ConfidenceBand, CCTVVideo } from '../types';
 import { generateEvidenceHash } from './cryptoUtils';
+import { analyzeCandidatePhoto } from './api';
 
 export async function analyzeCandidatePhotoQuality(imageSrc: string): Promise<CandidatePhotoQuality> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const width = img.naturalWidth || img.width;
-      const height = img.naturalHeight || img.height;
+  // Call real FastAPI backend for local face detection and biometric quality evaluation
+  const apiResult = await analyzeCandidatePhoto(imageSrc);
 
-      // Draw to offscreen canvas to analyze pixel brightness and gradient variance
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const sampleW = Math.min(width, 400);
-      const sampleH = Math.min(height, 500);
-      canvas.width = sampleW;
-      canvas.height = sampleH;
-
-      let brightness = 70;
-      let blurScore = 85;
-
-      if (ctx) {
-        ctx.drawImage(img, 0, 0, sampleW, sampleH);
-        try {
-          const imgData = ctx.getImageData(0, 0, sampleW, sampleH);
-          const data = imgData.data;
-          let totalLuma = 0;
-          let diffSum = 0;
-          let prevLuma = 128;
-
-          for (let i = 0; i < data.length; i += 16) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-            totalLuma += luma;
-            diffSum += Math.abs(luma - prevLuma);
-            prevLuma = luma;
-          }
-
-          const sampledPixels = data.length / 16;
-          brightness = (totalLuma / sampledPixels) / 2.55; // 0 - 100
-          blurScore = Math.min(100, Math.max(30, (diffSum / sampledPixels) * 4.2));
-        } catch {
-          // If cross-origin restricts pixels, fallback gracefully
-          brightness = 75;
-          blurScore = 88;
-        }
-      }
-
-      // Calculate estimated face bounding box
-      const faceW = Math.round(width * 0.52);
-      const faceH = Math.round(height * 0.58);
-      const facePct = Math.round((faceW * faceH) / (width * height) * 100);
-
-      const warnings: string[] = [];
-      if (width < 300 || height < 300) {
-        warnings.push(`Image resolution (${width}x${height}) is lower than recommended (minimum 400x400).`);
-      }
-      if (faceW < 40 || faceH < 40) {
-        warnings.push(`Detected face size (${faceW}px) is close to the minimum 40px threshold.`);
-      }
-      if (brightness < 40) {
-        warnings.push('Low illumination detected. Facial landmarks may have reduced contrast.');
-      } else if (brightness > 92) {
-        warnings.push('Overexposed lighting detected. Highlights might clip facial features.');
-      }
-      if (blurScore < 50) {
-        warnings.push('Moderate blurriness detected. Search accuracy may be reduced.');
-      }
-
-      resolve({
-        faceDetected: true,
-        faceCount: 1,
-        width,
-        height,
-        faceWidthPx: faceW,
-        faceHeightPx: faceH,
-        facePercentage: facePct,
-        blurScore: Math.round(blurScore * 10) / 10,
-        brightnessScore: Math.round(brightness * 10) / 10,
-        isQualityGood: warnings.length === 0,
-        warnings,
-      });
+  if (apiResult.face_count === 0) {
+    return {
+      faceDetected: false,
+      faceCount: 0,
+      width: apiResult.image_width,
+      height: apiResult.image_height,
+      faceWidthPx: 0,
+      faceHeightPx: 0,
+      facePercentage: 0,
+      blurScore: 0,
+      brightnessScore: 0,
+      isQualityGood: false,
+      qualityLabel: 'POOR',
+      guidanceMessage: apiResult.guidance_message,
+      detectedFaces: [],
+      warnings: ['No face detected in the uploaded image. Please upload a clear photograph facing the camera.']
     };
+  }
 
-    img.onerror = () => {
-      resolve({
-        faceDetected: false,
-        faceCount: 0,
-        width: 0,
-        height: 0,
-        faceWidthPx: 0,
-        faceHeightPx: 0,
-        facePercentage: 0,
-        blurScore: 0,
-        brightnessScore: 0,
-        isQualityGood: false,
-        warnings: ['Unable to decode image file. Please provide a valid JPG/PNG.'],
-      });
-    };
+  const primaryFace = apiResult.faces[0];
+  const allWarnings = apiResult.faces.flatMap(f => f.warnings);
 
-    img.src = imageSrc;
-  });
+  return {
+    faceDetected: true,
+    faceCount: apiResult.face_count,
+    width: apiResult.image_width,
+    height: apiResult.image_height,
+    faceWidthPx: primaryFace.face_width_px,
+    faceHeightPx: primaryFace.face_height_px,
+    facePercentage: primaryFace.face_percentage,
+    blurScore: primaryFace.blur_score,
+    brightnessScore: primaryFace.brightness_score,
+    isQualityGood: primaryFace.quality_label === 'GOOD',
+    qualityLabel: primaryFace.quality_label,
+    guidanceMessage: apiResult.guidance_message,
+    detectedFaces: apiResult.faces,
+    selectedFaceId: primaryFace.face_id,
+    warnings: allWarnings
+  };
 }
 
 /**

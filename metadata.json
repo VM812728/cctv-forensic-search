@@ -1,6 +1,10 @@
 {
   "name": "CCTV Candidate Search & Evidence Station",
   "description": "Enterprise Windows workstation application for AI-powered examination CCTV candidate identification, biometric matching, human verification, and automated evidence clip extraction with SHA-256 integrity verification.",
-  "requestFramePermissions": ["camera"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
