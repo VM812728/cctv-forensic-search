@@ -194,7 +194,7 @@ export const SearchResultsView: React.FC<SearchResultsViewProps> = ({
                   <th className="py-3.5 px-3.5">Time Range & OSD</th>
                   <th className="py-3.5 px-3.5 text-center">Duration</th>
                   <th className="py-3.5 px-3.5 text-center">Similarity</th>
-                  <th className="py-3.5 px-3.5 text-center">AI Engine</th>
+                  <th className="py-3.5 px-3.5 text-center">Stage H Verification</th>
                   <th className="py-3.5 px-3.5 text-center">Audit Status</th>
                   <th className="py-3.5 px-3.5 text-right">Verification Controls</th>
                 </tr>
@@ -202,6 +202,7 @@ export const SearchResultsView: React.FC<SearchResultsViewProps> = ({
               <tbody className="divide-y divide-white/5 font-sans">
                 {sortedMatches.map((match) => {
                   const durationSec = match.eventEndSeconds - match.eventStartSeconds;
+                  const vStatus = match.verificationStatus || 'VERIFIED';
                   return (
                     <tr key={match.id} className="hover:bg-white/[0.04] transition-colors">
                       {/* Thumbnail */}
@@ -259,11 +260,29 @@ export const SearchResultsView: React.FC<SearchResultsViewProps> = ({
                         </span>
                       </td>
 
-                      {/* AI Search Type */}
+                      {/* Stage H Verification Badge & Metrics */}
                       <td className="py-3 px-3.5 text-center">
-                        <span className="text-[11px] font-mono text-slate-300">
-                          {match.searchType === 'Face Recognition (SFace)' ? 'YuNet / SFace' : 'Appearance'}
-                        </span>
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold font-mono border backdrop-blur-xs ${
+                            vStatus === 'VERIFIED'
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : vStatus === 'REJECTED'
+                              ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                              : vStatus === 'INCONCLUSIVE'
+                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                              : 'bg-white/5 text-slate-400 border-white/10'
+                          }`}>
+                            {vStatus === 'VERIFIED' && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                            {vStatus === 'REJECTED' && <XCircle className="w-3 h-3 text-rose-400" />}
+                            <span>{vStatus}</span>
+                          </span>
+
+                          {match.verification_match_count !== undefined && (
+                            <span className="text-[10px] font-mono text-slate-400">
+                              Pass 2: {match.verification_match_count} frames @ {match.verification_sampling_fps || 8} FPS
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Review Status */}
@@ -283,6 +302,7 @@ export const SearchResultsView: React.FC<SearchResultsViewProps> = ({
                           <div className="text-[10px] text-slate-500 font-mono mt-0.5">{match.reviewer}</div>
                         )}
                       </td>
+
 
                       {/* Action Controls */}
                       <td className="py-3 px-3.5 text-right">

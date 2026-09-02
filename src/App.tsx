@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { WindowsTitleBar } from './components/WindowsTitleBar';
 import { Sidebar, NavTab } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
@@ -31,6 +31,17 @@ import {
 import { Case, SearchResultMatch, ClipEvidence, CCTVVideo, AppSettings, AuditLog, User, SearchJob } from './types';
 import { generateEvidenceHash } from './services/cryptoUtils';
 import { generatePdfReport } from './services/reportGenerator';
+import { 
+  getVideos, 
+  uploadVideo, 
+  deleteVideo, 
+  startSearch, 
+  getSearchStatus, 
+  getSearchResults, 
+  extractClip, 
+  getClips, 
+  getClipStreamUrl 
+} from './services/api';
 import { Shield, ScanFace, Loader2, AlertCircle, ShieldAlert, X, Lock } from 'lucide-react';
 
 function ForensicWorkstation() {
@@ -55,6 +66,46 @@ function ForensicWorkstation() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(INITIAL_AUDIT_LOGS);
   const [activeJobs, setActiveJobs] = useState<SearchJob[]>([]);
+
+  // Polling ref for active search
+  const searchPollIntervalRef = useRef<number | null>(null);
+
+  // Fetch real CCTV video list on mount
+  useEffect(() => {
+    getVideos()
+      .then(res => {
+        if (res.videos && res.videos.length > 0) {
+          const mappedVideos: CCTVVideo[] = res.videos.map(v => ({
+            id: v.video_id,
+            cameraName: v.camera_name || v.filename.replace(/\.[^/.]+$/, ''),
+            fileName: v.filename,
+            filePath: v.filename,
+            fileSizeBytes: v.file_size_bytes,
+            durationSeconds: v.duration_seconds,
+            fps: v.fps,
+            width: v.width,
+            height: v.height,
+            codec: v.codec || 'H.264 / MP4',
+            fileHash: generateEvidenceHash('video', v.video_id),
+            isIndexed: true,
+            facesDetectedCount: 0,
+          }));
+          setAvailableVideos(mappedVideos);
+        }
+      })
+      .catch(err => {
+        console.warn('Backend videos endpoint unavailable, using mock video catalog:', err);
+      });
+  }, []);
+
+  // Cleanup polling interval on unmount
+  useEffect(() => {
+    return () => {
+      if (searchPollIntervalRef.current) {
+        clearInterval(searchPollIntervalRef.current);
+      }
+    };
+  }, []);
 
   // Security Toast State for Blocked Operations
   const [securityToast, setSecurityToast] = useState<{ id: string; title: string; message: string } | null>(null);
@@ -106,126 +157,203 @@ function ForensicWorkstation() {
     }
   };
 
-  // Handle Launch Search
-  const handleStartSearch = (newCase: Case, selectedVideoIds: string[]) => {
+  // Handle Video Upload to Backend
+  const handleUploadVideo = async (file: File, cameraName?: string): Promise<CCTVVideo> => {
+    try {
+      const res = await uploadVideo(file, cameraName);
+      const newVid: CCTVVideo = {
+        id: res.video_id,
+        cameraName: res.camera_name || file.name.replace(/\.[^/.]+$/, ''),
+        fileName: res.filename,
+        filePath: res.filename,
+        fileSizeBytes: res.file_size_bytes,
+        durationSeconds: res.duration_seconds,
+        fps: res.fps,
+        width: res.width,
+        height: res.height,
+        codec: res.codec || 'H.264 / MP4',
+        fileHash: generateEvidenceHash('video', res.video_id),
+        isIndexed: true,
+        facesDetectedCount: 0,
+      };
+      setAvailableVideos(prev => [newVid, ...prev.filter(v => v.id !== newVid.id)]);
+      logAudit('VIDEO_UPLOADED', `Uploaded CCTV recording ${res.filename} (${(res.file_size_bytes / (1024 * 1024)).toFixed(1)} MB, ${res.duration_seconds.toFixed(0)}s)`);
+      return newVid;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Video upload failed';
+      triggerSecurityAlert('Video Upload Error', msg);
+      throw err;
+    }
+  };
+
+  // Handle Video Deletion from Backend
+  const handleDeleteVideo = async (videoId: string): Promise<void> => {
+    try {
+      await deleteVideo(videoId);
+      setAvailableVideos(prev => prev.filter(v => v.id !== videoId));
+      logAudit('VIDEO_DELETED', `Deleted CCTV video file ${videoId}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Video deletion failed';
+      triggerSecurityAlert('Video Deletion Error', msg);
+      throw err;
+    }
+  };
+
+  // Handle Launch Search (Connected to Real Backend)
+  const handleStartSearch = async (newCase: Case, selectedVideoIds: string[]) => {
     if (!validatePermission('SEARCH_EXECUTE', (reason) => {
       triggerSecurityAlert('Search Initiation Denied', reason, newCase.id);
     })) {
       return;
     }
 
-    setCases(prev => [newCase, ...prev]);
+    setCases(prev => [newCase, ...prev.filter(c => c.id !== newCase.id)]);
     setActiveCaseId(newCase.id);
 
-    // Create background jobs for each selected video
-    const newJobs: SearchJob[] = selectedVideoIds.map((vid, idx) => {
+    // Create initial background jobs representation for UI
+    const initialJobs: SearchJob[] = selectedVideoIds.map((vid, idx) => {
       const v = availableVideos.find(item => item.id === vid);
       return {
         id: `JOB-${Date.now().toString().slice(-4)}-${idx + 1}`,
         caseId: newCase.id,
         cameraName: v?.cameraName || `CAM-0${idx + 1}`,
-        status: 'Processing',
-        progressPercent: 5,
+        status: 'Queued',
+        progressPercent: 0,
         currentFile: v?.fileName || 'cctv_recording.mp4',
         timeRange: '09:00:00 - 13:00:00',
-        currentTimestamp: '09:15:30',
-        processingFps: 135.0,
-        elapsedSeconds: 12,
-        estimatedRemainingSeconds: 45,
+        currentTimestamp: '09:00:00',
+        processingFps: 0,
+        elapsedSeconds: 0,
+        estimatedRemainingSeconds: 60,
         facesAnalyzed: 0,
         matchesFound: 0,
       };
     });
 
-    setActiveJobs(newJobs);
+    setActiveJobs(initialJobs);
     logAudit('SEARCH_START', `Initiated search across ${selectedVideoIds.length} cameras for candidate ${newCase.candidate?.rollNumber}`, newCase.id);
-
-    // Simulate animated progressive search processing
-    let prog = 5;
-    const interval = setInterval(() => {
-      prog += 20;
-      if (prog >= 100) {
-        clearInterval(interval);
-        setActiveJobs([]);
-        
-        // Generate simulated matches for this new search
-        const generatedMatches: SearchResultMatch[] = [
-          {
-            id: `match-${newCase.id}-1`,
-            caseId: newCase.id,
-            candidateId: newCase.candidateId,
-            videoId: selectedVideoIds[0] || 'vid-01',
-            cameraName: 'CAM-01 (Main Entry Gate)',
-            eventStartSeconds: 140,
-            eventEndSeconds: 162,
-            peakTimestampSeconds: 151,
-            similarityScore: 0.892,
-            confidenceBand: 'High',
-            thumbnailUrl: newCase.candidate?.photoUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&h=300&fit=crop',
-            cctvFrameUrl: 'https://images.unsplash.com/photo-1517048676732-d65bc937f952?w=1280&h=720&fit=crop',
-            searchType: 'Face Recognition (SFace)',
-            reviewStatus: 'Pending',
-            clipGenerated: false,
-            boundingBox: { x: 380, y: 220, w: 160, h: 220 },
-          },
-          {
-            id: `match-${newCase.id}-2`,
-            caseId: newCase.id,
-            candidateId: newCase.candidateId,
-            videoId: selectedVideoIds[1] || 'vid-02',
-            cameraName: 'CAM-02 (Biometric Desk)',
-            eventStartSeconds: 310,
-            eventEndSeconds: 335,
-            peakTimestampSeconds: 322,
-            similarityScore: 0.865,
-            confidenceBand: 'High',
-            thumbnailUrl: newCase.candidate?.photoUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&h=300&fit=crop',
-            cctvFrameUrl: 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=1280&h=720&fit=crop',
-            searchType: 'Face Recognition (SFace)',
-            reviewStatus: 'Pending',
-            clipGenerated: false,
-            boundingBox: { x: 720, y: 290, w: 180, h: 240 },
-          },
-          {
-            id: `match-${newCase.id}-3`,
-            caseId: newCase.id,
-            candidateId: newCase.candidateId,
-            videoId: selectedVideoIds[2] || 'vid-03',
-            cameraName: 'CAM-03 (Corridor A)',
-            eventStartSeconds: 580,
-            eventEndSeconds: 602,
-            peakTimestampSeconds: 591,
-            similarityScore: 0.724,
-            confidenceBand: 'Medium',
-            thumbnailUrl: newCase.candidate?.photoUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&h=300&fit=crop',
-            cctvFrameUrl: 'https://images.unsplash.com/photo-1577495508048-b635879837f1?w=1280&h=720&fit=crop',
-            searchType: 'Face Recognition (SFace)',
-            reviewStatus: 'Pending',
-            clipGenerated: false,
-            boundingBox: { x: 510, y: 190, w: 140, h: 190 },
-          }
-        ];
-
-        setAllMatches(prev => [...generatedMatches, ...prev]);
-        setCases(prev => prev.map(c => c.id === newCase.id ? { 
-          ...c, 
-          status: 'Review Required',
-          totalMatchesCount: generatedMatches.length,
-        } : c));
-
-        logAudit('SEARCH_COMPLETE', `Search complete: found ${generatedMatches.length} candidate appearance occurrences.`, newCase.id);
-        setActiveTab('search_results');
-      } else {
-        setActiveJobs(prev => prev.map(j => ({
-          ...j,
-          progressPercent: prog,
-          facesAnalyzed: Math.round(prog * 18.5),
-          matchesFound: prog > 50 ? 2 : 0,
-        })));
-      }
-    }, 450);
-
     setActiveTab('search_results');
+
+    // Attempt real backend search execution
+    try {
+      const startRes = await startSearch({
+        case_id: newCase.id,
+        candidate_id: newCase.candidateId,
+        selected_video_ids: selectedVideoIds,
+        config: {
+          sampling_fps: settings.frameSampleFps || 3.0,
+          match_threshold: settings.similarityThresholdMedium || 0.50,
+          high_confidence_threshold: settings.similarityThresholdHigh || 0.65,
+          pre_roll_seconds: settings.preRollSeconds || 5,
+          post_roll_seconds: settings.postRollSeconds || 5,
+          verification_enabled: true,
+          verification_sampling_fps: 8,
+          verification_threshold: settings.similarityThresholdMedium || 0.50,
+        }
+      });
+
+      const searchId = startRes.search_id;
+
+      // Poll real search status
+      if (searchPollIntervalRef.current) {
+        clearInterval(searchPollIntervalRef.current);
+      }
+
+      searchPollIntervalRef.current = window.setInterval(async () => {
+        try {
+          const status = await getSearchStatus(searchId);
+
+          // Update active jobs with real backend metrics
+          setActiveJobs(prev => prev.map(job => ({
+            ...job,
+            status: status.status === 'RUNNING' ? 'Processing' : status.status === 'COMPLETED' ? 'Completed' : status.status === 'FAILED' ? 'Failed' : 'Queued',
+            progressPercent: status.progress_percent,
+            processingFps: status.processing_fps || 120,
+            elapsedSeconds: Math.round(status.elapsed_seconds),
+            estimatedRemainingSeconds: Math.round(status.estimated_remaining_seconds),
+            facesAnalyzed: status.faces_detected,
+            matchesFound: status.potential_matches,
+            currentFile: status.current_video || job.currentFile,
+            currentPhase: status.current_phase,
+            verificationStatus: status.verification_status,
+            verificationEventsTotal: status.verification_events_total,
+            verificationEventsProcessed: status.verification_events_processed,
+            potentialMatches: status.potential_matches,
+            verifiedMatches: status.verified_matches,
+          })));
+
+          if (status.status === 'COMPLETED') {
+            if (searchPollIntervalRef.current) {
+              clearInterval(searchPollIntervalRef.current);
+              searchPollIntervalRef.current = null;
+            }
+            setActiveJobs([]);
+
+            // Retrieve final search results
+            const results = await getSearchResults(searchId);
+            const mappedMatches: SearchResultMatch[] = results.map(r => ({
+              id: r.id,
+              caseId: newCase.id,
+              searchId: r.search_id,
+              candidateId: r.candidate_id,
+              videoId: r.video_id,
+              cameraName: r.camera_name,
+              eventStartSeconds: r.event_start_seconds,
+              eventEndSeconds: r.event_end_seconds,
+              peakTimestampSeconds: r.peak_timestamp_seconds,
+              similarityScore: r.similarity_score,
+              confidenceBand: (r.confidence_band as 'High' | 'Medium' | 'Low') || 'High',
+              thumbnailUrl: r.thumbnail_url || newCase.candidate?.photoUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&h=300&fit=crop',
+              cctvFrameUrl: r.cctv_frame_url || 'https://images.unsplash.com/photo-1517048676732-d65bc937f952?w=1280&h=720&fit=crop',
+              searchType: 'Face Recognition (SFace)',
+              reviewStatus: 'Pending',
+              clipGenerated: r.clip_generated || false,
+              clipId: r.clip_id,
+              boundingBox: {
+                x: r.bounding_box.x,
+                y: r.bounding_box.y,
+                w: r.bounding_box.width,
+                h: r.bounding_box.height,
+              },
+              verificationStatus: (r.verification_status as 'VERIFIED' | 'REJECTED' | 'INCONCLUSIVE' | 'UNVERIFIED') || 'VERIFIED',
+              pass1_event_id: r.pass1_event_id,
+              pass1_start_time: r.pass1_start_time,
+              pass1_end_time: r.pass1_end_time,
+              pass1_peak_similarity: r.pass1_peak_similarity,
+              verification_match_count: r.verification_match_count,
+              verification_sampling_fps: r.verification_sampling_fps,
+              verification_peak_similarity: r.verification_peak_similarity,
+            }));
+
+            setAllMatches(prev => [...mappedMatches, ...prev.filter(m => m.caseId !== newCase.id)]);
+            setCases(prev => prev.map(c => c.id === newCase.id ? {
+              ...c,
+              status: 'Review Required',
+              totalMatchesCount: mappedMatches.length,
+            } : c));
+
+            logAudit('SEARCH_COMPLETE', `Real backend search completed: found ${mappedMatches.length} candidate appearance occurrences.`, newCase.id);
+          } else if (status.status === 'FAILED' || status.status === 'CANCELLED') {
+            if (searchPollIntervalRef.current) {
+              clearInterval(searchPollIntervalRef.current);
+              searchPollIntervalRef.current = null;
+            }
+            setActiveJobs([]);
+            triggerSecurityAlert('Search Job Failed', status.error || 'Search job encountered a backend processing error.');
+            logAudit('SEARCH_FAILED', `Search job failed: ${status.error || 'Unknown error'}`, newCase.id, 'warning');
+          }
+        } catch (pollErr) {
+          console.warn('Polling error on search status:', pollErr);
+        }
+      }, 1000);
+
+    } catch (backendErr: any) {
+      const errMsg = backendErr?.message || 'Failed to start CCTV search job.';
+      console.error('Real backend search_start endpoint error:', backendErr);
+      setActiveJobs([]);
+      triggerSecurityAlert('Search Start Error', errMsg);
+      logAudit('SEARCH_START_FAILED', `Failed to start search: ${errMsg}`, newCase.id, 'security');
+    }
   };
 
   // Confirm Match Action
@@ -288,8 +416,8 @@ function ForensicWorkstation() {
     logAudit('MATCH_REJECTED', `Auditor rejected match event ${matchId}. Reason: ${notes || 'False positive'}`, currentCase.id);
   };
 
-  // Generate Clip
-  const handleGenerateClip = (matchId: string, preRoll: number, postRoll: number) => {
+  // Generate Clip (Real Backend Extraction)
+  const handleGenerateClip = async (matchId: string, preRoll: number, postRoll: number) => {
     if (!validatePermission('CLIP_GENERATE', (reason) => {
       triggerSecurityAlert('Clip Generation Denied', reason, currentCase?.id);
     })) {
@@ -304,37 +432,61 @@ function ForensicWorkstation() {
     const duration = endSec - startSec;
     const clipName = `${currentCase.caseCode}_${match.cameraName.replace(/[^a-zA-Z0-9]/g, '_')}_${startSec}s-${endSec}s.mp4`;
 
-    const newClip: ClipEvidence = {
-      id: `clip-${Date.now()}`,
-      caseId: currentCase.id,
-      searchResultId: match.id,
-      cameraName: match.cameraName,
-      clipFileName: clipName,
-      clipUrl: 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4',
-      preRollSeconds: preRoll,
-      postRollSeconds: postRoll,
-      clipStartSeconds: startSec,
-      clipEndSeconds: endSec,
-      clipDurationSeconds: duration,
-      clipSha256: generateEvidenceHash('clip', `${clipName}-${Date.now()}`),
-      sourceFileName: `${match.cameraName.toLowerCase().replace(/\s/g, '_')}_0900_1300.mp4`,
-      sourceFileSha256: generateEvidenceHash('source', match.cameraName),
-      appVersion: 'CCTV-Search-v1.0.0-win64',
-      generatedAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      generatedBy: currentUser?.username || 'officer',
-      caseCode: currentCase.caseCode,
-      candidateRoll: currentCase.candidate?.rollNumber || 'EX-UNKNOWN',
-    };
+    try {
+      const res = await extractClip({
+        event_id: match.id,
+        search_id: match.searchId,
+        case_id: currentCase.id,
+        video_id: match.videoId,
+        camera_name: match.cameraName,
+        candidate_id: currentCase.candidateId,
+        start_time_seconds: startSec,
+        end_time_seconds: endSec,
+        peak_timestamp_seconds: match.peakTimestampSeconds,
+        peak_similarity: match.similarityScore,
+        pre_roll_seconds: preRoll,
+        post_roll_seconds: postRoll,
+      });
 
-    setAllClips(prev => [newClip, ...prev]);
-    setAllMatches(prev => prev.map(m => m.id === matchId ? { ...m, clipGenerated: true } : m));
+      const extractedClip = res.clip;
+      const newClip: ClipEvidence = {
+        id: extractedClip.clip_id,
+        caseId: currentCase.id,
+        searchResultId: match.id,
+        cameraName: match.cameraName,
+        clipFileName: extractedClip.output_filename,
+        clipUrl: getClipStreamUrl(extractedClip.clip_id),
+        preRollSeconds: preRoll,
+        postRollSeconds: postRoll,
+        clipStartSeconds: extractedClip.clip_start_seconds,
+        clipEndSeconds: extractedClip.clip_end_seconds,
+        clipDurationSeconds: extractedClip.duration_seconds,
+        clipSha256: extractedClip.sha256,
+        sourceFileName: extractedClip.source_video_filename,
+        sourceFileSha256: generateEvidenceHash('source', match.cameraName),
+        appVersion: 'CCTV-Search-v1.0.0-win64',
+        generatedAt: extractedClip.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19),
+        generatedBy: currentUser?.username || 'officer',
+        caseCode: currentCase.caseCode,
+        candidateRoll: currentCase.candidate?.rollNumber || 'EX-UNKNOWN',
+        extractionMethod: extractedClip.extraction_method,
+      };
 
-    setCases(prev => prev.map(c => c.id === currentCase.id ? {
-      ...c,
-      clipsCount: c.clipsCount + 1,
-    } : c));
+      setAllClips(prev => [newClip, ...prev.filter(c => c.id !== newClip.id)]);
+      setAllMatches(prev => prev.map(m => m.id === matchId ? { ...m, clipGenerated: true, clipId: newClip.id } : m));
 
-    logAudit('CLIP_GENERATED', `Extracted evidence clip ${clipName} (${duration}s, SHA-256: ${newClip.clipSha256.substring(0, 16)}...)`, currentCase.id);
+      setCases(prev => prev.map(c => c.id === currentCase.id ? {
+        ...c,
+        clipsCount: c.clipsCount + 1,
+      } : c));
+
+      logAudit('CLIP_GENERATED', `Extracted evidence clip ${extractedClip.output_filename} (${extractedClip.duration_seconds}s, SHA-256: ${extractedClip.sha256.substring(0, 16)}...)`, currentCase.id);
+    } catch (clipErr: any) {
+      const errMsg = clipErr?.message || 'Failed to extract video clip from backend.';
+      console.error('Real backend clip extraction failed:', clipErr);
+      triggerSecurityAlert('Clip Extraction Failed', errMsg);
+      logAudit('CLIP_EXTRACTION_FAILED', `Clip extraction failed: ${errMsg}`, currentCase.id, 'warning');
+    }
   };
 
   // Generate all confirmed clips
@@ -546,6 +698,8 @@ function ForensicWorkstation() {
               onIndexVideo={handleIndexVideo}
               onBulkIndex={handleBulkIndex}
               onDeleteIndex={handleDeleteIndex}
+              onUploadVideo={handleUploadVideo}
+              onDeleteVideo={handleDeleteVideo}
             />
           )}
 

@@ -7,10 +7,17 @@ import {
   StartSearchApiRequest,
   StartSearchApiResponse,
   SearchStatusApiResponse,
-  CandidateReferenceInfo
+  CandidateReferenceInfo,
+  VideoMetadataApiResponse,
+  VideoListApiResponse,
+  SearchResultMatchApiItem,
+  RawFaceMatchApiItem,
+  ClipEvidenceApiItem,
+  ExtractClipRequestApiItem
 } from '../types';
 
-export const API_BASE_URL = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_URL || 'http://localhost:8000';
+
+export const API_BASE_URL = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_URL ?? '';
 
 export interface BackendHealth {
   status: string;
@@ -244,4 +251,249 @@ export async function getSearchStatus(searchId: string): Promise<SearchStatusApi
     throw err;
   }
 }
+
+/**
+ * Retrieve final detected candidate match results for a search job.
+ */
+export async function getSearchResults(searchId: string): Promise<SearchResultMatchApiItem[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/search/${encodeURIComponent(searchId)}/results`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to fetch search results (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Retrieve Stage E frame-level raw face matches.
+ */
+export async function getRawMatches(searchId: string): Promise<RawFaceMatchApiItem[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/search/${encodeURIComponent(searchId)}/raw-matches`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to fetch raw matches (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Retrieve Stage H Pass 2 dense verification matches.
+ */
+export async function getPass2Matches(searchId: string): Promise<RawFaceMatchApiItem[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/search/${encodeURIComponent(searchId)}/pass2-matches`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to fetch pass 2 matches (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Upload a CCTV video file to the backend repository.
+ */
+export async function uploadVideo(
+  videoFile: File | Blob,
+  cameraName?: string
+): Promise<VideoMetadataApiResponse> {
+  try {
+    const formData = new FormData();
+    formData.append('file', videoFile, (videoFile as File).name || 'cctv_recording.mp4');
+    if (cameraName) {
+      formData.append('camera_name', cameraName);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/videos/upload`, {
+      method: 'POST',
+      body: formData,
+      signal: AbortSignal.timeout(60000) // Videos can be large
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to upload video (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * List all available recorded CCTV videos in backend storage.
+ */
+export async function getVideos(): Promise<VideoListApiResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/videos`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to list videos (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Delete a CCTV video from backend storage.
+ */
+export async function deleteVideo(videoId: string): Promise<{ status: string; message: string; video_id: string }> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/videos/${encodeURIComponent(videoId)}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to delete video (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Extract forensic evidence clip for an appearance event.
+ */
+export async function extractClip(
+  request: ExtractClipRequestApiItem
+): Promise<{ clip: ClipEvidenceApiItem; message: string; status: string }> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/clips/extract`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to extract evidence clip (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Retrieve metadata for a specific evidence clip.
+ */
+export async function getClip(clipId: string): Promise<ClipEvidenceApiItem> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/clips/${encodeURIComponent(clipId)}`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Evidence clip not found (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * List all evidence clips, optionally filtered by Case ID.
+ */
+export async function getClips(caseId?: string): Promise<ClipEvidenceApiItem[]> {
+  try {
+    const url = caseId 
+      ? `${API_BASE_URL}/clips?case_id=${encodeURIComponent(caseId)}`
+      : `${API_BASE_URL}/clips`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(errorJson.detail || `Failed to list evidence clips (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err: unknown) {
+    if (err instanceof TypeError || (err instanceof Error && err.name === 'AbortError')) {
+      throw new BackendConnectionError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Generate stream URL for direct video player playback.
+ */
+export function getClipStreamUrl(clipId: string): string {
+  const cleanId = clipId.replace(/\.mp4$/, '');
+  return `${API_BASE_URL}/clips/${encodeURIComponent(cleanId)}/stream`;
+}
+
 

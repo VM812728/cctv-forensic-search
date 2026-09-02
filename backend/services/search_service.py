@@ -10,7 +10,9 @@ from backend.models.schemas import (
     SearchStatusResponse, 
     SearchResultMatchSchema,
     RawFaceMatch,
-    AppearanceEvent
+    AppearanceEvent,
+    BoundingBox,
+    FacialLandmarks
 )
 from backend.services.storage_manager import resolve_video_path
 try:
@@ -25,6 +27,7 @@ except Exception as _fe_err:
 
 from backend.services.matching_engine import matching_engine
 from backend.services.temporal_grouper import temporal_grouper
+from backend.services.verification_engine import verification_engine
 
 logger = logging.getLogger("SearchService")
 
@@ -126,6 +129,7 @@ class SearchJobManager:
             "case_id": case_id,
             "candidate_id": candidate_id,
             "status": "QUEUED",
+            "current_phase": "IDLE",
             "progress_percent": 0.0,
             "videos_total": len(selected_video_ids),
             "videos_processed": 0,
@@ -136,6 +140,12 @@ class SearchJobManager:
             "faces_detected": 0,
             "potential_matches": 0,
             "verified_matches": 0,
+            "verification_status": None,
+            "verification_events_total": 0,
+            "verification_events_processed": 0,
+            "verification_frames_processed": 0,
+            "verification_faces_detected": 0,
+            "verification_matches": 0,
             "processing_fps": 0.0,
             "elapsed_seconds": 0.0,
             "estimated_remaining_seconds": 0.0,
@@ -145,7 +155,8 @@ class SearchJobManager:
             "completed_at": None,
             "error": None,
             "results": [],
-            "raw_matches": []
+            "raw_matches": [],
+            "pass2_matches": []
         }
         return search_id
 
@@ -157,6 +168,34 @@ class SearchJobManager:
         # Copy and format results
         job_data = dict(job)
         job_data.pop("raw_matches", None)
+        formatted_results = []
+        for r in job_data.get("results", []):
+            if isinstance(r, dict):
+                bbox = r.get("bounding_box")
+                if isinstance(bbox, dict):
+                    r_copy = dict(r)
+                    r_copy["bounding_box"] = BoundingBox(**bbox)
+                    formatted_results.append(SearchResultMatchSchema(**r_copy))
+                else:
+                    formatted_results.append(SearchResultMatchSchema(**r))
+            else:
+                formatted_results.append(r)
+        job_data["results"] = formatted_results
+
+        # Format pass2_matches if present
+        raw_p2 = job_data.get("pass2_matches", [])
+        formatted_p2 = []
+        for m in raw_p2:
+            if isinstance(m, dict):
+                m_copy = dict(m)
+                bbox = m_copy.get("bounding_box")
+                if isinstance(bbox, dict):
+                    m_copy["bounding_box"] = BoundingBox(**bbox)
+                formatted_p2.append(RawFaceMatch(**m_copy))
+            else:
+                formatted_p2.append(m)
+        job_data["pass2_matches"] = formatted_p2
+
         return SearchStatusResponse(**job_data)
 
     @staticmethod
@@ -165,6 +204,13 @@ class SearchJobManager:
         if not job:
             return []
         return [RawFaceMatch(**m) if isinstance(m, dict) else m for m in job.get("raw_matches", [])]
+
+    @staticmethod
+    def get_pass2_matches(search_id: str) -> List[RawFaceMatch]:
+        job = _SEARCH_JOBS.get(search_id)
+        if not job:
+            return []
+        return [RawFaceMatch(**m) if isinstance(m, dict) else m for m in job.get("pass2_matches", [])]
 
     @staticmethod
     def update_job_status(search_id: str, **updates: Any) -> bool:
@@ -213,6 +259,7 @@ class SearchJobManager:
         cls.update_job_status(
             search_id,
             status="RUNNING",
+            current_phase="PASS 1 SCANNING",
             started_at=datetime.datetime.now(datetime.timezone.utc).isoformat()
         )
 
@@ -362,7 +409,61 @@ class SearchJobManager:
 
             # Final Stage F Appearance Event Aggregation across all videos
             appearance_events = temporal_grouper.group_matches(raw_matches_list, cfg)
-            results_list = [ev.to_search_result_match().dict() for ev in appearance_events]
+
+            # Stage H: Two-Pass Candidate Verification & Dense Event Refinement
+            pass2_raw_matches_list: List[Dict[str, Any]] = []
+            verif_enabled = bool(cfg.get("verification_enabled", True))
+            verif_final_status = "DISABLED"
+            verif_events_total = len(appearance_events)
+            verif_events_processed = 0
+            verif_frames_processed = 0
+            verif_faces_detected = 0
+            verif_matches_count = 0
+
+            if verif_enabled and appearance_events:
+                cls.update_job_status(
+                    search_id,
+                    current_phase="PASS 2 VERIFYING",
+                    verification_status="RUNNING",
+                    verification_events_total=verif_events_total
+                )
+
+                def _path_resolver(vid: str):
+                    return resolve_video_path(vid, case_id=case_id)
+
+                def _telemetry_cb(t: Dict[str, Any]):
+                    cls.update_job_status(
+                        search_id,
+                        verification_events_processed=t.get("events_processed", 0),
+                        verification_frames_processed=t.get("frames_processed", 0),
+                        verification_faces_detected=t.get("faces_detected", 0),
+                        verification_matches=t.get("matches_found", 0)
+                    )
+
+                refined_events, pass2_matches, verif_telemetry = verification_engine.verify_appearance_events(
+                    events=appearance_events,
+                    video_path_resolver=_path_resolver,
+                    candidate_embedding=candidate_embedding,
+                    config=cfg,
+                    telemetry_callback=_telemetry_cb
+                )
+
+                final_events = refined_events
+                pass2_raw_matches_list = [m.dict() for m in pass2_matches]
+                verif_final_status = "COMPLETED"
+                verif_events_processed = verif_telemetry.get("events_processed", len(refined_events))
+                verif_frames_processed = verif_telemetry.get("total_frames_sampled", 0)
+                verif_faces_detected = verif_telemetry.get("total_faces_detected", 0)
+                verif_matches_count = len(pass2_matches)
+                total_verified_matches = sum(1 for e in refined_events if e.verification_status == "VERIFIED" and e.confidence_band == "High")
+            elif not verif_enabled:
+                final_events = [ev.copy(update={"verification_status": "UNVERIFIED"}) for ev in appearance_events]
+                verif_final_status = "DISABLED"
+            else:
+                final_events = []
+                verif_final_status = "COMPLETED"
+
+            results_list = [ev.to_search_result_match().dict() for ev in final_events]
 
             # Deterministic sorting of results: (video_id, event_start_seconds, id)
             results_list.sort(key=lambda r: (r.get("video_id", ""), r.get("event_start_seconds", 0.0), r.get("id", "")))
@@ -377,11 +478,18 @@ class SearchJobManager:
             cls.update_job_status(
                 search_id,
                 status=final_status,
+                current_phase="COMPLETED" if final_status == "COMPLETED" else "FAILED",
                 progress_percent=100.0 if final_status == "COMPLETED" else round(job.get("progress_percent", 0.0), 1),
                 frames_processed=total_frames_sampled,
                 faces_detected=total_faces_detected,
                 potential_matches=total_potential_matches,
                 verified_matches=total_verified_matches,
+                verification_status=verif_final_status,
+                verification_events_total=verif_events_total,
+                verification_events_processed=verif_events_processed,
+                verification_frames_processed=verif_frames_processed,
+                verification_faces_detected=verif_faces_detected,
+                verification_matches=verif_matches_count,
                 videos_processed=total_videos,
                 processing_fps=round(total_frames_sampled / elapsed_total, 1),
                 elapsed_seconds=round(elapsed_total, 1),
@@ -389,7 +497,8 @@ class SearchJobManager:
                 completed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 error=error_summary,
                 results=results_list,
-                raw_matches=raw_matches_list
+                raw_matches=raw_matches_list,
+                pass2_matches=pass2_raw_matches_list
             )
             logger.info(
                 f"SearchJob {search_id} finished with status={final_status}, "

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   DatabaseZap, 
   RotateCw, 
@@ -10,7 +10,10 @@ import {
   Cpu, 
   Layers, 
   FileCheck,
-  Plus
+  Plus,
+  Upload,
+  Film,
+  Loader2
 } from 'lucide-react';
 import { CCTVVideo } from '../types';
 import { formatBytes, formatSecondsToTimecode } from '../services/cryptoUtils';
@@ -20,6 +23,8 @@ interface CCTVIndexingViewProps {
   onIndexVideo: (videoId: string) => void;
   onBulkIndex: () => void;
   onDeleteIndex: (videoId: string) => void;
+  onUploadVideo?: (file: File, cameraName?: string) => Promise<CCTVVideo>;
+  onDeleteVideo?: (videoId: string) => Promise<void>;
 }
 
 export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
@@ -27,9 +32,14 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
   onIndexVideo,
   onBulkIndex,
   onDeleteIndex,
+  onUploadVideo,
+  onDeleteVideo,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedVideo, setSelectedVideo] = useState<CCTVVideo | null>(videos[0] || null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filteredVideos = videos.filter(v => 
     v.cameraName.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -39,6 +49,39 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
   const indexedCount = videos.filter(v => v.isIndexed).length;
   const unindexedCount = videos.length - indexedCount;
   const totalFaces = videos.reduce((acc, v) => acc + (v.facesDetectedCount || 0), 0);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !onUploadVideo) return;
+
+    try {
+      setIsUploading(true);
+      setUploadProgress(`Uploading ${file.name} (${formatBytes(file.size)})...`);
+      const newVid = await onUploadVideo(file, file.name.replace(/\.[^/.]+$/, ''));
+      setSelectedVideo(newVid);
+      setUploadProgress(null);
+    } catch (err: any) {
+      alert(`Video upload failed: ${err.message || err}`);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleDelete = async (videoId: string) => {
+    if (confirm(`Are you sure you want to delete video ${videoId} from backend storage?`)) {
+      if (onDeleteVideo) {
+        await onDeleteVideo(videoId);
+        if (selectedVideo?.id === videoId) {
+          setSelectedVideo(videos.find(v => v.id !== videoId) || null);
+        }
+      } else {
+        onDeleteIndex(videoId);
+      }
+    }
+  };
 
   return (
     <div id="cctv-indexing-view" className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto w-full">
@@ -55,6 +98,27 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            accept="video/mp4,video/mkv,video/avi,video/mov"
+            className="hidden"
+          />
+
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold shadow-[0_0_15px_rgba(16,185,129,0.4)] transition-all cursor-pointer backdrop-blur-xs"
+          >
+            {isUploading ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Upload className="w-3.5 h-3.5" />
+            )}
+            <span>{isUploading ? 'Uploading Video...' : 'Upload CCTV Video'}</span>
+          </button>
+
           {unindexedCount > 0 && (
             <button
               onClick={onBulkIndex}
@@ -66,6 +130,13 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
           )}
         </div>
       </div>
+
+      {uploadProgress && (
+        <div className="p-3 bg-blue-500/15 border border-blue-500/30 rounded-xl text-xs text-blue-300 flex items-center gap-2 animate-pulse">
+          <Loader2 className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
+          <span>{uploadProgress}</span>
+        </div>
+      )}
 
       {/* KPI Counters */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -95,9 +166,9 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
 
         <div className="p-5 rounded-2xl bg-white/[0.04] backdrop-blur-xl border border-white/10 flex items-center justify-between shadow-lg shadow-black/10">
           <div>
-            <div className="text-xs text-slate-400 font-medium">Storage Location</div>
+            <div className="text-xs text-slate-400 font-medium">Backend Storage Repository</div>
             <div className="text-xs font-bold font-mono text-slate-200 mt-1 truncate max-w-[200px]">
-              D:\CCTV_Ops\Indexes\
+              storage/videos/
             </div>
           </div>
           <div className="w-11 h-11 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-300 backdrop-blur-xs">
@@ -122,45 +193,51 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
           </div>
 
           <div className="space-y-2">
-            {filteredVideos.map((video) => {
-              const isSelected = selectedVideo?.id === video.id;
-              return (
-                <div
-                  key={video.id}
-                  onClick={() => setSelectedVideo(video)}
-                  className={`p-3.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all backdrop-blur-xs ${
-                    isSelected
-                      ? 'bg-blue-500/10 border-blue-500/60 shadow-sm'
-                      : 'bg-white/[0.02] border-white/10 hover:border-white/20 hover:bg-white/[0.05]'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      video.isIndexed ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                    }`}>
-                      {video.isIndexed ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-xs text-slate-200">{video.cameraName}</div>
-                      <div className="text-[11px] text-slate-400 font-mono truncate max-w-sm">
-                        {video.fileName}
+            {filteredVideos.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-400 border border-dashed border-white/10 rounded-xl">
+                No CCTV videos registered. Click "Upload CCTV Video" above to add real footage to the backend.
+              </div>
+            ) : (
+              filteredVideos.map((video) => {
+                const isSelected = selectedVideo?.id === video.id;
+                return (
+                  <div
+                    key={video.id}
+                    onClick={() => setSelectedVideo(video)}
+                    className={`p-3.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all backdrop-blur-xs ${
+                      isSelected
+                        ? 'bg-blue-500/10 border-blue-500/60 shadow-sm'
+                        : 'bg-white/[0.02] border-white/10 hover:border-white/20 hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                        video.isIndexed ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                      }`}>
+                        {video.isIndexed ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                      </div>
+                      <div>
+                        <div className="font-semibold text-xs text-slate-200">{video.cameraName}</div>
+                        <div className="text-[11px] text-slate-400 font-mono truncate max-w-sm">
+                          {video.fileName}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-4 text-xs font-mono">
-                    <span className="text-slate-400">{formatSecondsToTimecode(video.durationSeconds)}</span>
-                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-xs ${
-                      video.isIndexed 
-                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' 
-                        : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                    }`}>
-                      {video.isIndexed ? 'Indexed' : 'Pending'}
-                    </span>
+                    <div className="flex items-center gap-4 text-xs font-mono">
+                      <span className="text-slate-400">{formatSecondsToTimecode(video.durationSeconds)}</span>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-xs ${
+                        video.isIndexed 
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' 
+                          : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                      }`}>
+                        {video.isIndexed ? 'Indexed' : 'Pending'}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -180,7 +257,7 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
                 </div>
 
                 <div>
-                  <span className="text-slate-400 text-[11px] block">File Path:</span>
+                  <span className="text-slate-400 text-[11px] block">Storage Location:</span>
                   <span className="font-mono text-slate-300 text-[11px] break-all">{selectedVideo.filePath}</span>
                 </div>
 
@@ -204,7 +281,7 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-slate-900/60 border border-white/10 backdrop-blur-xs">
-                  <span className="text-slate-500 text-[10px] block font-mono">SHA-256 Content Hash:</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">SHA-256 Digest:</span>
                   <span className="text-slate-300 font-mono text-[10px] break-all">{selectedVideo.fileHash}</span>
                 </div>
 
@@ -214,11 +291,11 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
                     <span>Vector Index Details</span>
                   </div>
                   <div className="text-[11px] text-slate-300 space-y-0.5">
-                    <div>Status: <strong className="text-slate-100">{selectedVideo.isIndexed ? 'Indexed (Cached)' : 'Not Indexed'}</strong></div>
+                    <div>Status: <strong className="text-slate-100">{selectedVideo.isIndexed ? 'Indexed (Ready for Scan)' : 'Pending Index'}</strong></div>
                     {selectedVideo.isIndexed && (
                       <>
                         <div>Detected Faces: <strong className="text-emerald-400">{selectedVideo.facesDetectedCount}</strong></div>
-                        <div>Indexed At: <span className="font-mono text-slate-400">{selectedVideo.indexedAt}</span></div>
+                        <div>Indexed At: <span className="font-mono text-slate-400">{selectedVideo.indexedAt || 'Live Storage'}</span></div>
                       </>
                     )}
                   </div>
@@ -235,15 +312,13 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
                 <span>{selectedVideo.isIndexed ? 'Rebuild Index' : 'Build Index Now'}</span>
               </button>
 
-              {selectedVideo.isIndexed && (
-                <button
-                  onClick={() => onDeleteIndex(selectedVideo.id)}
-                  className="px-3.5 py-2.5 rounded-xl bg-white/5 hover:bg-red-500/20 hover:text-red-300 hover:border-red-500/30 text-slate-400 text-xs transition-all border border-white/10 cursor-pointer backdrop-blur-xs"
-                  title="Delete Vector Index"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              )}
+              <button
+                onClick={() => handleDelete(selectedVideo.id)}
+                className="px-3.5 py-2.5 rounded-xl bg-white/5 hover:bg-red-500/20 hover:text-red-300 hover:border-red-500/30 text-slate-400 text-xs transition-all border border-white/10 cursor-pointer backdrop-blur-xs"
+                title="Delete Video from Backend"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
         ) : null}
@@ -251,3 +326,4 @@ export const CCTVIndexingView: React.FC<CCTVIndexingViewProps> = ({
     </div>
   );
 };
+

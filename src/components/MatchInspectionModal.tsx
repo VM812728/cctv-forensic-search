@@ -14,10 +14,14 @@ import {
   Camera, 
   Maximize2,
   Clock,
-  Sparkles
+  Sparkles,
+  Layers,
+  Activity,
+  Loader2
 } from 'lucide-react';
-import { SearchResultMatch, Candidate, AppSettings } from '../types';
+import { SearchResultMatch, Candidate, AppSettings, RawFaceMatchApiItem } from '../types';
 import { formatSecondsToTimecode, formatTimeOfDay } from '../services/cryptoUtils';
+import { getPass2Matches, getRawMatches } from '../services/api';
 
 interface MatchInspectionModalProps {
   match: SearchResultMatch;
@@ -45,11 +49,37 @@ export const MatchInspectionModal: React.FC<MatchInspectionModalProps> = ({
   const [postRoll, setPostRoll] = useState(settings.postRollSeconds);
   const [auditorNotes, setAuditorNotes] = useState(match.reviewNotes || '');
 
+  // Stage H Verification details state
+  const [pass2Matches, setPass2Matches] = useState<RawFaceMatchApiItem[]>([]);
+  const [loadingPass2, setLoadingPass2] = useState(false);
+
   const startSec = Math.max(0, match.eventStartSeconds - 15);
   const endSec = match.eventEndSeconds + 15;
   const durationWindow = endSec - startSec;
 
   const animationFrameRef = useRef<number | null>(null);
+
+  // Fetch real Stage H Pass 2 matches if searchId exists
+  useEffect(() => {
+    if (match.searchId) {
+      setLoadingPass2(true);
+      getPass2Matches(match.searchId)
+        .then(res => {
+          const eventPass2 = res.filter(m => 
+            m.video_id === match.videoId && 
+            m.timestamp_seconds >= match.eventStartSeconds - 2 && 
+            m.timestamp_seconds <= match.eventEndSeconds + 2
+          );
+          setPass2Matches(eventPass2);
+        })
+        .catch(err => {
+          console.warn('Could not load pass 2 matches for searchId:', match.searchId, err);
+        })
+        .finally(() => {
+          setLoadingPass2(false);
+        });
+    }
+  }, [match.searchId, match.videoId, match.eventStartSeconds, match.eventEndSeconds]);
 
   // Playback timer simulation
   useEffect(() => {
@@ -154,6 +184,30 @@ export const MatchInspectionModal: React.FC<MatchInspectionModalProps> = ({
                   </span>
                 </div>
               </div>
+
+              {/* Stage H Two-Pass Telemetry */}
+              <div className="p-3 bg-white/[0.03] border border-white/10 rounded-xl space-y-2 font-mono text-[11px]">
+                <div className="text-xs font-bold text-slate-200 flex items-center gap-1.5 font-sans">
+                  <Layers className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Two-Pass Telemetry</span>
+                </div>
+                <div className="flex justify-between text-slate-300">
+                  <span className="text-slate-400">Pass 1 Event:</span>
+                  <span className="font-semibold">{formatSecondsToTimecode(match.pass1_start_time ?? match.eventStartSeconds)} - {formatSecondsToTimecode(match.pass1_end_time ?? match.eventEndSeconds)}</span>
+                </div>
+                <div className="flex justify-between text-slate-300">
+                  <span className="text-slate-400">Pass 1 Peak:</span>
+                  <span className="text-emerald-400 font-semibold">{((match.pass1_peak_similarity ?? match.similarityScore) * 100).toFixed(1)}%</span>
+                </div>
+                <div className="flex justify-between text-slate-300">
+                  <span className="text-slate-400">Pass 2 Rate:</span>
+                  <span className="text-purple-300 font-semibold">{match.verification_sampling_fps || 8} FPS dense</span>
+                </div>
+                <div className="flex justify-between text-slate-300">
+                  <span className="text-slate-400">Pass 2 Matches:</span>
+                  <span className="text-emerald-400 font-semibold">{match.verification_match_count ?? pass2Matches.length} frames</span>
+                </div>
+              </div>
             </div>
 
             {/* Center & Right (2 cols): CCTV Video Player & Bounding Box Overlay */}
@@ -184,7 +238,7 @@ export const MatchInspectionModal: React.FC<MatchInspectionModalProps> = ({
                   }}
                 >
                   <div className="absolute -top-5 left-0 bg-emerald-500 text-white font-mono text-[9px] px-1.5 py-0.2 rounded font-bold whitespace-nowrap shadow">
-                    {(match.similarityScore * 100).toFixed(1)}% {match.searchType.split(' ')[0]}
+                    {(match.similarityScore * 100).toFixed(1)}% {match.verificationStatus || 'VERIFIED'}
                   </div>
                 </div>
 
@@ -283,6 +337,32 @@ export const MatchInspectionModal: React.FC<MatchInspectionModalProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Pass 2 Frame Timeline Strip */}
+              {pass2Matches.length > 0 && (
+                <div className="p-3 bg-white/[0.04] backdrop-blur-xl border border-white/10 rounded-xl space-y-1.5">
+                  <div className="text-[11px] font-bold text-slate-200 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Pass 2 Dense Verification Samples ({pass2Matches.length} detections)</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400">Dense 8 FPS</span>
+                  </div>
+                  <div className="flex gap-1 overflow-x-auto py-1">
+                    {pass2Matches.map((pm, idx) => (
+                      <div 
+                        key={idx}
+                        onClick={() => setCurrentTimeSec(pm.timestamp_seconds)}
+                        className="px-2 py-1 bg-slate-900/80 hover:bg-blue-600/30 border border-white/10 rounded text-[10px] font-mono text-slate-300 cursor-pointer shrink-0 transition-colors"
+                        title={`Frame ${pm.frame_index} @ ${pm.timestamp_seconds.toFixed(2)}s: ${(pm.similarity * 100).toFixed(1)}%`}
+                      >
+                        <div>{formatSecondsToTimecode(pm.timestamp_seconds)}</div>
+                        <div className="text-emerald-400 font-bold">{(pm.similarity * 100).toFixed(0)}%</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

@@ -131,3 +131,17 @@ async def get_search_raw_matches(search_id: str = FPath(..., description="Unique
             detail=f"SEARCH_NOT_FOUND: Search job '{search_id}' does not exist."
         )
     return SearchJobManager.get_raw_matches(search_id)
+
+@router.get("/{search_id}/pass2-matches", response_model=List[RawFaceMatch])
+async def get_search_pass2_matches(search_id: str = FPath(..., description="Unique Search ID")):
+    """
+    Returns Stage H Pass 2 dense verification raw face matches.
+    """
+    job = SearchJobManager.get_job_status(search_id)
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail=f"SEARCH_NOT_FOUND: Search job '{search_id}' does not exist."
+        )
+    return SearchJobManager.get_pass2_matches(search_id)
+

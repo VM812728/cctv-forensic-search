@@ -97,6 +97,12 @@ export interface SearchConfigParams {
   pre_roll_seconds: number;
   post_roll_seconds: number;
   verification_enabled: boolean;
+  verification_padding_seconds?: number;
+  verification_sampling_fps?: number;
+  verification_threshold?: number;
+  verification_high_confidence_threshold?: number;
+  min_verification_matches?: number;
+  min_verification_duration_seconds?: number;
 }
 
 export interface StartSearchApiRequest {
@@ -115,6 +121,25 @@ export interface StartSearchApiResponse {
   videos_total: number;
   created_at: string;
 }
+
+export interface VideoMetadataApiResponse {
+  video_id: string;
+  filename: string;
+  file_size_bytes: number;
+  duration_seconds: number;
+  fps: number;
+  width: number;
+  height: number;
+  codec: string;
+  camera_name?: string;
+  created_at?: string;
+}
+
+export interface VideoListApiResponse {
+  videos: VideoMetadataApiResponse[];
+  total_count: number;
+}
+
 
 export interface AppearanceEventApiItem {
   event_id: string;
@@ -204,6 +229,14 @@ export interface SearchResultMatchApiItem {
   frame_index?: number;
   raw_match_id?: string;
   frame_match_count?: number;
+  verification_status?: 'VERIFIED' | 'REJECTED' | 'INCONCLUSIVE' | 'UNVERIFIED' | string;
+  pass1_event_id?: string;
+  pass1_start_time?: number;
+  pass1_end_time?: number;
+  pass1_peak_similarity?: number;
+  verification_match_count?: number;
+  verification_sampling_fps?: number;
+  verification_peak_similarity?: number;
 }
 
 export interface RawFaceMatchApiItem {
@@ -229,6 +262,7 @@ export interface SearchStatusApiResponse {
   case_id?: string;
   candidate_id: string;
   status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  current_phase?: string;
   progress_percent: number;
   videos_total: number;
   videos_processed: number;
@@ -238,6 +272,12 @@ export interface SearchStatusApiResponse {
   faces_detected: number;
   potential_matches: number;
   verified_matches: number;
+  verification_status?: string;
+  verification_events_total?: number;
+  verification_events_processed?: number;
+  verification_frames_processed?: number;
+  verification_faces_detected?: number;
+  verification_matches?: number;
   processing_fps: number;
   elapsed_seconds: number;
   estimated_remaining_seconds: number;
@@ -247,8 +287,8 @@ export interface SearchStatusApiResponse {
   error?: string;
   results: SearchResultMatchApiItem[];
   raw_matches?: RawFaceMatchApiItem[];
+  pass2_matches?: RawFaceMatchApiItem[];
 }
-
 
 export interface CandidatePhotoQuality {
   faceDetected: boolean;
@@ -312,6 +352,7 @@ export type SearchType = 'Face Recognition (SFace)' | 'Appearance Search (Fallba
 export interface SearchResultMatch {
   id: string;
   caseId: string;
+  searchId?: string;
   candidateId: string;
   videoId: string;
   cameraName: string;
@@ -335,6 +376,15 @@ export interface SearchResultMatch {
     w: number;
     h: number;
   };
+  landmarks?: FacialLandmarksInfo;
+  verificationStatus?: 'VERIFIED' | 'REJECTED' | 'INCONCLUSIVE' | 'UNVERIFIED';
+  pass1_event_id?: string;
+  pass1_start_time?: number;
+  pass1_end_time?: number;
+  pass1_peak_similarity?: number;
+  verification_match_count?: number;
+  verification_sampling_fps?: number;
+  verification_peak_similarity?: number;
   appearanceMatchDetails?: {
     upperColorMatch: boolean;
     lowerColorMatch: boolean;
@@ -362,7 +412,10 @@ export interface ClipEvidence {
   generatedBy: string;
   caseCode: string;
   candidateRoll: string;
+  fileSizeBytes?: number;
+  extractionMethod?: string;
 }
+
 
 export interface Case {
   id: string;
@@ -400,7 +453,14 @@ export interface SearchJob {
   estimatedRemainingSeconds: number;
   facesAnalyzed: number;
   matchesFound: number;
+  currentPhase?: string;
+  verificationStatus?: string;
+  verificationEventsTotal?: number;
+  verificationEventsProcessed?: number;
+  potentialMatches?: number;
+  verifiedMatches?: number;
 }
+
 
 export interface AuditLog {
   id: string;

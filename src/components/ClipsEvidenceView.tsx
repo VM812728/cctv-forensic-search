@@ -250,26 +250,49 @@ export const ClipsEvidenceView: React.FC<ClipsEvidenceViewProps> = ({
               </button>
             </div>
 
-            <div className="aspect-video bg-black rounded-xl overflow-hidden relative border border-white/10">
-              <img
-                src={activeClipModal.thumbnailUrl}
-                alt="Clip Video"
-                className="w-full h-full object-cover"
-              />
+            <div className="aspect-video bg-black rounded-xl overflow-hidden relative border border-white/10 flex items-center justify-center">
+              {activeClipModal.clipUrl ? (
+                <video
+                  src={activeClipModal.clipUrl}
+                  controls
+                  autoPlay
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <img
+                  src={activeClipModal.thumbnailUrl}
+                  alt="Clip Video"
+                  className="w-full h-full object-cover"
+                />
+              )}
               <div className="absolute top-3 left-3 bg-black/75 backdrop-blur-xs px-2.5 py-1 rounded-lg text-white font-mono text-xs border border-white/20">
                 {activeClipModal.cameraName} • Evidence Clip ({activeClipModal.clipDurationSeconds}s)
               </div>
             </div>
 
-            <div className="bg-slate-950/80 p-3.5 rounded-xl border border-white/10 font-mono text-xs space-y-1 backdrop-blur-xs">
-              <div className="text-slate-400">SHA-256 Hash Digest:</div>
-              <div className="text-emerald-400 break-all">{activeClipModal.clipSha256}</div>
+            <div className="bg-slate-950/80 p-3.5 rounded-xl border border-white/10 font-mono text-xs space-y-1.5 backdrop-blur-xs">
+              <div className="flex justify-between text-slate-400">
+                <span>Extraction Pipeline:</span>
+                <span className="text-purple-300 font-semibold">{activeClipModal.extractionMethod || 'FFmpeg StreamCopy + Re-encode'}</span>
+              </div>
+              <div className="text-slate-400">SHA-256 Bit-Exact Cryptographic Hash Digest:</div>
+              <div className="text-emerald-400 break-all select-all bg-black/40 p-2 rounded border border-white/5">{activeClipModal.clipSha256}</div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex justify-between items-center gap-2 pt-2">
+              {activeClipModal.clipUrl && (
+                <a
+                  href={activeClipModal.clipUrl}
+                  download={activeClipModal.clipFileName}
+                  className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-[0_0_15px_rgba(168,85,247,0.3)] transition-all cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download MP4 Evidence</span>
+                </a>
+              )}
               <button
                 onClick={() => setActiveClipModal(null)}
-                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200 text-xs font-semibold border border-white/10 transition-all cursor-pointer backdrop-blur-xs"
+                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200 text-xs font-semibold border border-white/10 transition-all cursor-pointer backdrop-blur-xs ml-auto"
               >
                 Close
               </button>

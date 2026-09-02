@@ -133,8 +133,20 @@ class MatchingEngine:
         # Validate candidate embedding once
         cand_vec = cls.validate_embedding(candidate_embedding, "Candidate embedding")
 
-        for face_idx, face_dict in enumerate(detected_faces):
-            cctv_emb = face_dict.get("embedding")
+        for face_idx, face_item in enumerate(detected_faces):
+            if isinstance(face_item, dict):
+                cctv_emb = face_item.get("embedding")
+                raw_bbox = face_item.get("bounding_box", {})
+                raw_landmarks = face_item.get("landmarks")
+                face_ref_id = face_item.get("face_id")
+                det_conf = face_item.get("confidence") or face_item.get("detection_confidence")
+            else:
+                cctv_emb = getattr(face_item, "embedding", None)
+                raw_bbox = getattr(face_item, "bounding_box", {})
+                raw_landmarks = getattr(face_item, "landmarks", None)
+                face_ref_id = getattr(face_item, "face_id", None)
+                det_conf = getattr(face_item, "detection_confidence", None)
+
             if not cctv_emb:
                 continue
 
@@ -152,16 +164,26 @@ class MatchingEngine:
                 )
 
                 # Extract bounding box
-                raw_bbox = face_dict.get("bounding_box", {})
-                bbox = BoundingBox(
-                    x=int(raw_bbox.get("x", 0)),
-                    y=int(raw_bbox.get("y", 0)),
-                    width=int(raw_bbox.get("width", 0)),
-                    height=int(raw_bbox.get("height", 0))
-                )
+                if isinstance(raw_bbox, BoundingBox):
+                    bbox = raw_bbox
+                elif isinstance(raw_bbox, dict):
+                    bbox = BoundingBox(
+                        x=int(raw_bbox.get("x", 0)),
+                        y=int(raw_bbox.get("y", 0)),
+                        width=int(raw_bbox.get("width", 0)),
+                        height=int(raw_bbox.get("height", 0))
+                    )
+                elif hasattr(raw_bbox, "x"):
+                    bbox = BoundingBox(
+                        x=int(getattr(raw_bbox, "x", 0)),
+                        y=int(getattr(raw_bbox, "y", 0)),
+                        width=int(getattr(raw_bbox, "width", 0)),
+                        height=int(getattr(raw_bbox, "height", 0))
+                    )
+                else:
+                    bbox = BoundingBox(x=0, y=0, width=0, height=0)
 
                 # Extract landmarks if available
-                raw_landmarks = face_dict.get("landmarks")
                 facial_landmarks: Optional[FacialLandmarks] = None
                 if raw_landmarks and isinstance(raw_landmarks, FacialLandmarks):
                     facial_landmarks = raw_landmarks
@@ -173,7 +195,7 @@ class MatchingEngine:
                     search_id=search_id,
                     case_id=case_id,
                     candidate_id=candidate_id,
-                    reference_id=face_dict.get("face_id"),
+                    reference_id=face_ref_id,
                     video_id=video_id,
                     camera_name=cam_name,
                     frame_index=frame_index,
@@ -183,7 +205,7 @@ class MatchingEngine:
                     bounding_box=bbox,
                     facial_landmarks=facial_landmarks,
                     face_index=face_idx,
-                    detection_confidence=face_dict.get("detection_confidence"),
+                    detection_confidence=det_conf,
                     created_at=now_iso
                 )
                 matches.append(match_record)

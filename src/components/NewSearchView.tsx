@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Upload, 
   Camera, 
@@ -57,6 +57,13 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
   const [backendError, setBackendError] = useState<string | null>(null);
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-analyze and register initial candidate photo on mount
+  useEffect(() => {
+    if (photoUrl && !selectedFaceId) {
+      handlePhotoSelect(photoUrl);
+    }
+  }, []);
 
   // Appearance Fallback Tags
   const [upperColor, setUpperColor] = useState('Navy Blue / Dark');
@@ -169,8 +176,7 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
   const loadPresetCandidate = (preset: typeof SAMPLE_CANDIDATES[0]) => {
     setRollNumber(preset.rollNumber);
     setCandidateName(preset.candidateName);
-    setPhotoUrl(preset.photoUrl);
-    setPhotoQuality(preset.photoQuality);
+    handlePhotoSelect(preset.photoUrl);
     if (preset.appearanceTags?.upperClothingColor) setUpperColor(preset.appearanceTags.upperClothingColor);
     if (preset.appearanceTags?.lowerClothingColor) setLowerColor(preset.appearanceTags.lowerClothingColor);
     if (preset.appearanceTags?.hasBackpack !== undefined) setHasBackpack(preset.appearanceTags.hasBackpack);
@@ -187,8 +193,9 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
       return;
     }
 
+    const realCandidateId = selectedFaceId || `cand-${Date.now()}`;
     const candidate: Candidate = {
-      id: `cand-${Date.now()}`,
+      id: realCandidateId,
       caseId: caseCode,
       rollNumber,
       candidateName,
@@ -209,7 +216,7 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
       examName,
       examDate,
       centreName,
-      candidateId: candidate.id,
+      candidateId: realCandidateId,
       candidate,
       notes,
       storagePath: `${settings.casesDir}\\${caseCode}`,

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import time
 import math
@@ -247,6 +248,83 @@ class VideoEngine:
                     )
                     
                     # Advance sampling target
+                    next_sample_timestamp += sample_interval
+                    while next_sample_timestamp <= current_timestamp:
+                        next_sample_timestamp += sample_interval
+
+                frame_idx += 1
+        finally:
+            cap.release()
+
+    @classmethod
+    def sample_frames_in_window(
+        cls,
+        file_path: Union[str, Path],
+        start_time_seconds: float = 0.0,
+        end_time_seconds: Optional[float] = None,
+        sampling_fps: float = 10.0,
+        video_id: Optional[str] = None
+    ) -> Generator[SampledFrame, None, None]:
+        """
+        Stage H: Sequentially reads and yields frames specifically within [start_time_seconds, end_time_seconds]
+        at the requested sampling_fps (dense verification sampling).
+        Seeks directly to start_time_seconds to avoid decoding the whole video from the beginning.
+        Only one frame matrix resides in memory per iteration.
+        """
+        if sampling_fps <= 0.0:
+            raise ValueError(f"INVALID_SAMPLING_FPS: sampling_fps must be > 0 (got {sampling_fps}).")
+
+        metadata = cls.get_video_metadata(file_path, video_id=video_id)
+        src_fps = metadata.fps if metadata.fps > 0 else 25.0
+        vid_id = metadata.video_id
+        duration = metadata.duration_seconds
+
+        win_start = max(0.0, float(start_time_seconds))
+        if end_time_seconds is not None:
+            win_end = min(duration, float(end_time_seconds)) if duration > 0 else float(end_time_seconds)
+        else:
+            win_end = duration
+
+        if win_end <= win_start:
+            return
+
+        effective_sampling_fps = min(sampling_fps, src_fps)
+        sample_interval = 1.0 / effective_sampling_fps
+        half_src_frame = 0.5 / src_fps
+
+        cap = cv2.VideoCapture(str(file_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"VIDEO_OPEN_FAILED: Failed to open video stream for window sampling '{file_path}'.")
+
+        try:
+            # Fast seek to start frame
+            start_frame = int(win_start * src_fps)
+            if start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                pos_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                frame_idx = pos_frames if pos_frames >= 0 else start_frame
+            else:
+                frame_idx = 0
+
+            next_sample_timestamp = win_start
+
+            while True:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    break
+
+                current_timestamp = frame_idx / src_fps
+
+                if current_timestamp > win_end + half_src_frame:
+                    break
+
+                if current_timestamp >= next_sample_timestamp - half_src_frame:
+                    yield SampledFrame(
+                        frame=frame,
+                        timestamp_seconds=current_timestamp,
+                        frame_index=frame_idx,
+                        source_video_id=vid_id
+                    )
                     next_sample_timestamp += sample_interval
                     while next_sample_timestamp <= current_timestamp:
                         next_sample_timestamp += sample_interval

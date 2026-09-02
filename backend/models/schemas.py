@@ -142,6 +142,12 @@ class SearchConfig(BaseModel):
     pre_roll_seconds: float = Field(default=5.0, description="Pre-roll context buffer in seconds for clip extraction")
     post_roll_seconds: float = Field(default=5.0, description="Post-roll context buffer in seconds for clip extraction")
     verification_enabled: bool = Field(default=True, description="Enable two-pass dense boundary verification")
+    verification_padding_seconds: float = Field(default=3.0, description="Padding in seconds around Stage F event window for dense Pass 2 verification")
+    verification_sampling_fps: float = Field(default=10.0, description="Sampling rate in FPS for dense Pass 2 verification window")
+    verification_threshold: Optional[float] = Field(None, description="Optional custom similarity threshold for Pass 2 (defaults to match_threshold)")
+    verification_high_confidence_threshold: Optional[float] = Field(None, description="Optional custom high-confidence threshold for Pass 2")
+    min_verification_matches: int = Field(default=2, description="Minimum qualifying matches in Pass 2 to declare event VERIFIED")
+    min_verification_duration_seconds: float = Field(default=0.5, description="Minimum verified event duration in seconds")
 
 class StartSearchRequest(BaseModel):
     case_id: Optional[str] = None
@@ -197,6 +203,18 @@ class AppearanceEvent(BaseModel):
     thumbnail_url: Optional[str] = None
     clip_id: Optional[str] = None
     clip_generated: bool = False
+    verification_status: str = Field(default="UNVERIFIED", description="VERIFIED | REJECTED | INCONCLUSIVE | UNVERIFIED")
+    pass1_event_id: Optional[str] = None
+    pass1_start_time: Optional[float] = None
+    pass1_end_time: Optional[float] = None
+    pass1_peak_similarity: Optional[float] = None
+    verification_started_at: Optional[str] = None
+    verification_completed_at: Optional[str] = None
+    verification_sampling_fps: Optional[float] = None
+    verification_frame_count: Optional[int] = 0
+    verification_faces_detected: Optional[int] = 0
+    verification_match_count: Optional[int] = 0
+    verification_peak_similarity: Optional[float] = None
     created_at: Optional[str] = None
 
     def to_search_result_match(self) -> "SearchResultMatchSchema":
@@ -222,7 +240,15 @@ class AppearanceEvent(BaseModel):
             raw_match_id=self.event_id,
             frame_match_count=self.frame_match_count,
             facial_landmarks=self.peak_facial_landmarks,
-            reference_id=self.reference_id
+            reference_id=self.reference_id,
+            verification_status=self.verification_status,
+            pass1_event_id=self.pass1_event_id,
+            pass1_start_time=self.pass1_start_time,
+            pass1_end_time=self.pass1_end_time,
+            pass1_peak_similarity=self.pass1_peak_similarity,
+            verification_match_count=self.verification_match_count,
+            verification_sampling_fps=self.verification_sampling_fps,
+            verification_peak_similarity=self.verification_peak_similarity
         )
 
 class SearchResultMatchSchema(BaseModel):
@@ -248,12 +274,21 @@ class SearchResultMatchSchema(BaseModel):
     frame_index: Optional[int] = None
     raw_match_id: Optional[str] = None
     frame_match_count: int = 1
+    verification_status: Optional[str] = "UNVERIFIED"
+    pass1_event_id: Optional[str] = None
+    pass1_start_time: Optional[float] = None
+    pass1_end_time: Optional[float] = None
+    pass1_peak_similarity: Optional[float] = None
+    verification_match_count: Optional[int] = 0
+    verification_sampling_fps: Optional[float] = None
+    verification_peak_similarity: Optional[float] = None
 
 class SearchStatusResponse(BaseModel):
     search_id: str
     case_id: Optional[str] = None
     candidate_id: str
     status: str = Field(description="QUEUED | RUNNING | COMPLETED | FAILED | CANCELLED")
+    current_phase: Optional[str] = Field(default="IDLE", description="PASS 1 SCANNING | PASS 2 VERIFYING | COMPLETED | FAILED")
     progress_percent: float = Field(ge=0.0, le=100.0)
     videos_total: int
     videos_processed: int
@@ -263,6 +298,12 @@ class SearchStatusResponse(BaseModel):
     faces_detected: int = 0
     potential_matches: int = 0
     verified_matches: int = 0
+    verification_status: Optional[str] = None
+    verification_events_total: int = 0
+    verification_events_processed: int = 0
+    verification_frames_processed: int = 0
+    verification_faces_detected: int = 0
+    verification_matches: int = 0
     processing_fps: float = 0.0
     elapsed_seconds: float = 0.0
     estimated_remaining_seconds: float = 0.0
@@ -272,6 +313,7 @@ class SearchStatusResponse(BaseModel):
     error: Optional[str] = None
     results: List[SearchResultMatchSchema] = Field(default_factory=list)
     raw_matches: List[RawFaceMatch] = Field(default_factory=list)
+    pass2_matches: List[RawFaceMatch] = Field(default_factory=list)
 
 class ClipEvidence(BaseModel):
     clip_id: str
@@ -317,6 +359,23 @@ class ClipEvidenceResponse(BaseModel):
     clip: ClipEvidence
     message: str = "Evidence clip extracted successfully"
     status: str = "SUCCESS"
+
+class VideoMetadataResponse(BaseModel):
+    video_id: str
+    filename: str
+    file_size_bytes: int
+    duration_seconds: float
+    fps: float
+    width: int
+    height: int
+    codec: str
+    camera_name: Optional[str] = None
+    created_at: Optional[str] = None
+
+class VideoListResponse(BaseModel):
+    videos: List[VideoMetadataResponse]
+    total_count: int
+
 
 
 

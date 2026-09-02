@@ -1,5 +1,14 @@
-import cv2
-import numpy as np
+from __future__ import annotations
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 import uuid
 import datetime
 import urllib.request
@@ -99,6 +108,11 @@ class FaceEngine:
         Validates model presence and initializes YuNet and SFace neural network pipelines.
         Sets biometric_engine_ready = True only when both load and pass test inference.
         """
+        if cv2 is None or np is None:
+            self.model_initialization_error = "OpenCV (cv2) or NumPy is not installed in the environment."
+            self.biometric_engine_ready = False
+            return
+
         self._verify_and_download_models()
 
         yunet_ok = False

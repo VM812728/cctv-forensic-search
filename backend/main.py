@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 from backend.config import CORS_ORIGINS, HOST, PORT
-from backend.api import health, candidate, search, clips
+from backend.api import health, candidate, search, clips, videos
 
 app = FastAPI(
     title="CCTV Candidate Search & Evidence Station API",
@@ -23,8 +23,10 @@ app.add_middleware(
 # Include API Routers
 app.include_router(health.router)
 app.include_router(candidate.router)
+app.include_router(videos.router)
 app.include_router(search.router)
 app.include_router(clips.router)
+
 
 
 
