@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "User account profile for CCTV candidate identification station with role-based access control.",
+      "description": "User account profile for CCTV candidate identification station with role-based access control and admin approval workflow.",
       "type": "object",
       "properties": {
         "uid": {
@@ -11,8 +11,13 @@
         },
         "name": {
           "type": "string",
-          "description": "Full display name of the user.",
-          "maxLength": 100
+          "description": "Full display name of the officer or user.",
+          "maxLength": 120
+        },
+        "full_name": {
+          "type": "string",
+          "description": "Full name recorded during registration request.",
+          "maxLength": 120
         },
         "email": {
           "type": "string",
@@ -20,19 +25,54 @@
           "description": "Email address of the user.",
           "maxLength": 120
         },
+        "mobile_number": {
+          "type": "string",
+          "description": "Official contact or mobile telephone number.",
+          "maxLength": 30
+        },
         "role": {
           "type": "string",
-          "enum": ["Admin", "Auditor", "Viewer"],
+          "enum": ["Admin", "ADMIN", "SUPER_ADMIN", "Auditor", "Viewer", "USER"],
           "description": "Role determining forensic permissions."
         },
         "status": {
           "type": "string",
-          "enum": ["Active", "Disabled"],
-          "description": "Operational status of the account."
+          "enum": ["PENDING", "APPROVED", "REJECTED", "Active", "Disabled"],
+          "description": "Operational approval status of the account."
+        },
+        "user_id": {
+          "type": "string",
+          "description": "Activated human-readable forensic User ID (e.g. CVS-US-102948).",
+          "maxLength": 60
+        },
+        "created_at": {
+          "type": "string",
+          "description": "Account registration timestamp."
+        },
+        "approved_at": {
+          "type": "string",
+          "description": "Timestamp when account was approved by an administrator."
+        },
+        "approved_by": {
+          "type": "string",
+          "description": "UID of the administrator who approved the registration."
+        },
+        "rejected_at": {
+          "type": "string",
+          "description": "Timestamp when account registration was rejected."
+        },
+        "rejected_by": {
+          "type": "string",
+          "description": "UID of the administrator who rejected the registration."
+        },
+        "rejection_reason": {
+          "type": "string",
+          "description": "Optional notes or reason provided by administrator for rejection.",
+          "maxLength": 500
         },
         "createdAt": {
           "type": "string",
-          "description": "Account registration timestamp."
+          "description": "Legacy account registration timestamp."
         },
         "lastLoginAt": {
           "type": "string",
@@ -44,7 +84,7 @@
           "maxLength": 500
         }
       },
-      "required": ["uid", "name", "email", "role", "status"]
+      "required": ["uid", "email", "role", "status"]
     }
   },
   "firestore": {

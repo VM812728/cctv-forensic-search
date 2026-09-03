@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import {
   auth,
   db,
@@ -15,11 +15,9 @@ import {
   updateDoc,
   getDocs,
   collection,
-  handleFirestoreError,
-  OperationType,
   FirebaseUser
 } from '../services/firebase';
-import { User, UserRole } from '../types';
+import { User, UserRole, UserStatus } from '../types';
 
 export type ForensicAction = 
   | 'SEARCH_EXECUTE'
@@ -33,8 +31,32 @@ export type ForensicAction =
   | 'USER_MANAGE'
   | 'REPORT_EXPORT';
 
-export const ROLE_PERMISSIONS: Record<UserRole, ForensicAction[]> = {
+export const ROLE_PERMISSIONS: Record<string, ForensicAction[]> = {
   Admin: [
+    'SEARCH_EXECUTE',
+    'MATCH_REVIEW',
+    'CLIP_GENERATE',
+    'VECTOR_INDEX',
+    'DELETE_INDEX',
+    'CASE_DELETE',
+    'CASE_CREATE',
+    'SETTINGS_MODIFY',
+    'USER_MANAGE',
+    'REPORT_EXPORT',
+  ],
+  ADMIN: [
+    'SEARCH_EXECUTE',
+    'MATCH_REVIEW',
+    'CLIP_GENERATE',
+    'VECTOR_INDEX',
+    'DELETE_INDEX',
+    'CASE_DELETE',
+    'CASE_CREATE',
+    'SETTINGS_MODIFY',
+    'USER_MANAGE',
+    'REPORT_EXPORT',
+  ],
+  SUPER_ADMIN: [
     'SEARCH_EXECUTE',
     'MATCH_REVIEW',
     'CLIP_GENERATE',
@@ -57,35 +79,58 @@ export const ROLE_PERMISSIONS: Record<UserRole, ForensicAction[]> = {
   Viewer: [
     'REPORT_EXPORT',
   ],
+  USER: [],
 };
 
-export const hasRolePermission = (role: UserRole | undefined, action: ForensicAction): boolean => {
+export const hasRolePermission = (role: UserRole | string | undefined, action: ForensicAction): boolean => {
   if (!role) return false;
   const permissions = ROLE_PERMISSIONS[role] || [];
   return permissions.includes(action);
 };
 
-export const isUserAuthorized = (user: User | null | undefined, allowedRoles: UserRole[]): boolean => {
-  if (!user || !user.role) return false;
-  return allowedRoles.includes(user.role);
-};
+export interface UserProfileData {
+  uid: string;
+  name?: string;
+  full_name?: string;
+  email: string;
+  mobile_number?: string;
+  role: UserRole;
+  status: UserStatus;
+  user_id?: string | null;
+  created_at?: string;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  rejected_at?: string | null;
+  rejected_by?: string | null;
+  rejection_reason?: string | null;
+  lastLoginAt?: string;
+  createdAt?: string;
+  avatar?: string;
+}
 
 interface AuthContextType {
   currentUser: User | null;
   firebaseUser: FirebaseUser | null;
   isLoading: boolean;
+  authLoading: boolean;
   authError: string | null;
+  role: UserRole;
+  status: UserStatus;
+  isAuthenticated: boolean;
+  isApproved: boolean;
+  isAdmin: boolean;
+  isAuditor: boolean;
+  isViewer: boolean;
+
   signInWithEmail: (email: string, pass: string) => Promise<void>;
-  signUpWithEmail: (name: string, email: string, pass: string, role?: UserRole) => Promise<void>;
+  signUpWithEmail: (name: string, email: string, pass: string, mobile?: string, role?: UserRole) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   resetPassword: (email: string) => Promise<string>;
   signOutUser: () => Promise<void>;
   clearAuthError: () => void;
-  
+  refreshCurrentUser: () => Promise<void>;
+
   // Role & Permission Utilities
-  isAdmin: boolean;
-  isAuditor: boolean;
-  isViewer: boolean;
   hasRole: (roles: UserRole | UserRole[]) => boolean;
   canPerform: (action: ForensicAction) => boolean;
   validatePermission: (
@@ -93,19 +138,27 @@ interface AuthContextType {
     onUnauthorized?: (reason: string) => void
   ) => boolean;
 
-  // User Management for Admins
+  // Admin User Approval & Management
   allUsers: User[];
   isLoadingUsers: boolean;
   refreshUsersList: () => Promise<void>;
+  approveUser: (userId: string, assignedRole?: UserRole) => Promise<string>;
+  rejectUser: (userId: string, reason?: string) => Promise<void>;
   updateUserRole: (userId: string, newRole: UserRole) => Promise<void>;
   toggleUserStatus: (userId: string, newStatus: 'Active' | 'Disabled') => Promise<void>;
-  provisionUser: (user: { name: string; email: string; role: UserRole }) => Promise<void>;
+  provisionUser: (user: { name: string; email: string; role: UserRole; mobile?: string }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Known initial administrator email from project config
-const BOOTSTRAP_ADMIN_EMAIL = 'vm812728@gmail.com';
+// Primary administrator email pre-authorized for the forensic workstation
+export const BOOTSTRAP_ADMIN_EMAIL = 'vm812728@gmail.com';
+
+// Generate human-readable forensic User ID: e.g. CVS-US-738201
+export function generateForensicUserId(): string {
+  const digits = Math.floor(100000 + Math.random() * 900000);
+  return `CVS-US-${digits}`;
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -117,119 +170,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(false);
 
-  // Sync profile with Firestore
-  const syncUserProfile = async (fbUser: FirebaseUser): Promise<User> => {
-    const userRef = doc(db, 'users', fbUser.uid);
-    try {
-      const snap = await getDoc(userRef);
-      const nowIso = new Date().toISOString().replace('T', ' ').substring(0, 19);
-
-      if (snap.exists()) {
-        const data = snap.data();
-        if (data.status === 'Disabled') {
-          await firebaseSignOut(auth);
-          throw new Error('Your account has been disabled. Please contact the administrator.');
-        }
-
-        // Update last login
-        try {
-          await updateDoc(userRef, { lastLoginAt: nowIso });
-        } catch {
-          // Non-blocking update failure
-        }
-
-        const appUser: User = {
-          id: fbUser.uid,
-          username: (fbUser.email || fbUser.displayName || 'user').split('@')[0],
-          fullName: data.name || fbUser.displayName || 'Authorized Forensic Officer',
-          email: fbUser.email || data.email || '',
-          role: (data.role as UserRole) || 'Auditor',
-          avatar: data.avatar || fbUser.photoURL || undefined,
-          status: data.status || 'Active',
-          createdAt: data.createdAt || nowIso,
-          lastLogin: nowIso,
-          isFirebaseUser: true,
-        };
-        return appUser;
-      } else {
-        // Create initial profile in Firestore
-        // If it's the bootstrap admin email or the first user, assign Admin
-        const isDefaultAdmin = fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-        
-        const newProfile = {
-          uid: fbUser.uid,
-          name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Forensic Officer'),
-          email: fbUser.email || '',
-          role: isDefaultAdmin ? 'Admin' : 'Auditor',
-          status: 'Active',
-          createdAt: nowIso,
-          lastLoginAt: nowIso,
-          avatar: fbUser.photoURL || '',
-        };
-
-        try {
-          await setDoc(userRef, newProfile);
-        } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}`);
-        }
-
-        const appUser: User = {
-          id: fbUser.uid,
-          username: (fbUser.email || 'officer').split('@')[0],
-          fullName: newProfile.name,
-          email: newProfile.email,
-          role: newProfile.role as UserRole,
-          avatar: newProfile.avatar || undefined,
-          status: 'Active',
-          createdAt: nowIso,
-          lastLogin: nowIso,
-          isFirebaseUser: true,
-        };
-        return appUser;
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('disabled')) {
-        throw err;
-      }
-      // If Firestore is offline or restricted, build local safe profile
-      const appUser: User = {
-        id: fbUser.uid,
-        username: (fbUser.email || 'user').split('@')[0],
-        fullName: fbUser.displayName || 'Forensic Officer',
-        email: fbUser.email || '',
-        role: fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase() ? 'Admin' : 'Auditor',
-        avatar: fbUser.photoURL || undefined,
-        status: 'Active',
-        lastLogin: new Date().toISOString().replace('T', ' ').substring(0, 19),
-        isFirebaseUser: true,
-      };
-      return appUser;
-    }
-  };
-
-  // Listen to Firebase auth state changes
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      try {
-        if (fbUser) {
-          setFirebaseUser(fbUser);
-          const appUser = await syncUserProfile(fbUser);
-          setCurrentUser(appUser);
-        } else {
-          setFirebaseUser(null);
-          setCurrentUser(null);
-        }
-      } catch (err: unknown) {
-        console.error('Authentication Error:', err);
-        setAuthError(err instanceof Error ? err.message : 'Authentication verification error.');
-        setCurrentUser(null);
-      } finally {
-        setIsLoading(false);
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
+  // Guard to prevent concurrent sync operations
+  const isSyncingRef = useRef<boolean>(false);
 
   const formatFirebaseError = (error: unknown): string => {
     if (typeof error !== 'object' || error === null || !('code' in error)) {
@@ -240,9 +182,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       case 'auth/invalid-email':
         return 'Please enter a valid email address.';
       case 'auth/user-not-found':
+        return 'No registered account found with this email address.';
       case 'auth/wrong-password':
       case 'auth/invalid-credential':
-        return 'Invalid email or password.';
+        return 'Invalid email or password. Please verify your credentials.';
       case 'auth/user-disabled':
         return 'Your account has been disabled. Please contact the administrator.';
       case 'auth/email-already-in-use':
@@ -254,9 +197,181 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       case 'auth/popup-blocked':
         return 'Sign-in popup was blocked by browser. Please allow popups for this site.';
       case 'auth/network-request-failed':
-        return 'Unable to connect. Please check your internet connection and try again.';
+        return 'Unable to connect to authentication servers. Please verify internet connection.';
+      case 'auth/too-many-requests':
+        return 'Too many attempts. Access to this account has been temporarily restricted. Please try again later or reset password.';
+      case 'auth/unauthorized-domain':
+        return 'This domain is not authorized in Firebase Auth settings. Please register domain in Firebase Console.';
       default:
-        return (error as { message?: string }).message || 'Authentication failed. Please verify credentials.';
+        return (error as { message?: string }).message || 'Authentication operation failed.';
+    }
+  };
+
+  // Convert raw Firestore doc data into application User model
+  const mapDocToUser = (uid: string, data: UserProfileData, fallbackEmail?: string | null): User => {
+    const isBootstrap = (data.email || fallbackEmail || '').toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+    
+    // Normalize role: Admin, Auditor, Viewer, USER
+    let role: UserRole = (data.role as UserRole) || (isBootstrap ? 'Admin' : 'USER');
+    if (role === 'ADMIN' || role === 'SUPER_ADMIN') {
+      role = 'Admin';
+    }
+
+    // Normalize status: APPROVED, PENDING, REJECTED, Active, Disabled
+    let status: UserStatus = data.status || (isBootstrap ? 'APPROVED' : 'PENDING');
+    if (isBootstrap) {
+      status = 'APPROVED';
+      role = 'Admin';
+    }
+
+    const name = data.full_name || data.name || (data.email ? data.email.split('@')[0] : 'Forensic Officer');
+    const email = data.email || fallbackEmail || '';
+
+    return {
+      id: uid,
+      username: email ? email.split('@')[0] : 'officer',
+      fullName: name,
+      email,
+      mobileNumber: data.mobile_number || '',
+      role,
+      status,
+      userId: data.user_id || (isBootstrap ? 'CVS-ADMIN-000001' : undefined),
+      avatar: data.avatar || undefined,
+      createdAt: data.created_at || data.createdAt || new Date().toISOString(),
+      approvedAt: data.approved_at || null,
+      approvedBy: data.approved_by || null,
+      rejectedAt: data.rejected_at || null,
+      rejectedBy: data.rejected_by || null,
+      rejectionReason: data.rejection_reason || null,
+      lastLogin: data.lastLoginAt || new Date().toISOString(),
+      isFirebaseUser: true,
+    };
+  };
+
+  // Synchronize Firestore profile for authenticated user
+  const syncUserProfile = useCallback(async (fbUser: FirebaseUser): Promise<User> => {
+    const userRef = doc(db, 'users', fbUser.uid);
+    const nowIso = new Date().toISOString();
+    const isBootstrap = fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+
+    try {
+      const snap = await getDoc(userRef);
+
+      if (snap.exists()) {
+        const data = snap.data() as UserProfileData;
+
+        // If it's the bootstrap admin, guarantee active admin status in DB
+        if (isBootstrap && (data.role !== 'Admin' || (data.status !== 'APPROVED' && data.status !== 'Active'))) {
+          try {
+            await updateDoc(userRef, {
+              role: 'Admin',
+              status: 'APPROVED',
+              approved_at: nowIso,
+              approved_by: 'SYSTEM_BOOTSTRAP',
+              user_id: data.user_id || 'CVS-ADMIN-000001',
+              lastLoginAt: nowIso,
+            });
+          } catch {
+            // non-fatal
+          }
+        } else {
+          // Update last login timestamp
+          try {
+            await updateDoc(userRef, { lastLoginAt: nowIso });
+          } catch {
+            // non-fatal
+          }
+        }
+
+        return mapDocToUser(fbUser.uid, data, fbUser.email);
+      } else {
+        // Document does not exist yet in Firestore
+        // Provision initial record according to approval mandate
+        const initialRole: UserRole = isBootstrap ? 'Admin' : 'USER';
+        const initialStatus: UserStatus = isBootstrap ? 'APPROVED' : 'PENDING';
+        const initialUserId = isBootstrap ? 'CVS-ADMIN-000001' : null;
+
+        const newProfile: UserProfileData = {
+          uid: fbUser.uid,
+          name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Forensic Officer'),
+          full_name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Forensic Officer'),
+          email: fbUser.email || '',
+          mobile_number: '',
+          role: initialRole,
+          status: initialStatus,
+          user_id: initialUserId,
+          created_at: nowIso,
+          approved_at: isBootstrap ? nowIso : null,
+          approved_by: isBootstrap ? 'SYSTEM_BOOTSTRAP' : null,
+          rejected_at: null,
+          rejected_by: null,
+          rejection_reason: null,
+          lastLoginAt: nowIso,
+          avatar: fbUser.photoURL || '',
+        };
+
+        try {
+          await setDoc(userRef, newProfile);
+        } catch (setErr) {
+          console.warn('Could not set initial profile in Firestore:', setErr);
+        }
+
+        return mapDocToUser(fbUser.uid, newProfile, fbUser.email);
+      }
+    } catch (err) {
+      console.warn('Firestore profile query failed, using fallback profile:', err);
+      // Fallback safe representation
+      return {
+        id: fbUser.uid,
+        username: (fbUser.email || 'user').split('@')[0],
+        fullName: fbUser.displayName || 'Forensic Officer',
+        email: fbUser.email || '',
+        role: isBootstrap ? 'Admin' : 'USER',
+        status: isBootstrap ? 'APPROVED' : 'PENDING',
+        userId: isBootstrap ? 'CVS-ADMIN-000001' : undefined,
+        createdAt: nowIso,
+        lastLogin: nowIso,
+        isFirebaseUser: true,
+      };
+    }
+  }, []);
+
+  // Listen to Firebase auth state changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (isSyncingRef.current) return;
+      isSyncingRef.current = true;
+
+      try {
+        if (fbUser) {
+          setFirebaseUser(fbUser);
+          const appUser = await syncUserProfile(fbUser);
+          setCurrentUser(appUser);
+        } else {
+          setFirebaseUser(null);
+          setCurrentUser(null);
+        }
+      } catch (err: unknown) {
+        console.error('Authentication Error in onAuthStateChanged:', err);
+        setAuthError(err instanceof Error ? err.message : 'Authentication verification error.');
+        setCurrentUser(null);
+      } finally {
+        setIsLoading(false);
+        isSyncingRef.current = false;
+      }
+    });
+
+    return () => unsubscribe();
+  }, [syncUserProfile]);
+
+  // Refresh current user profile from Firestore (e.g. while pending approval)
+  const refreshCurrentUser = async () => {
+    if (!auth.currentUser) return;
+    try {
+      const updatedUser = await syncUserProfile(auth.currentUser);
+      setCurrentUser(updatedUser);
+    } catch (err) {
+      console.warn('Failed to refresh user profile:', err);
     }
   };
 
@@ -267,6 +382,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
       const appUser = await syncUserProfile(cred.user);
+      setFirebaseUser(cred.user);
       setCurrentUser(appUser);
     } catch (err) {
       const msg = formatFirebaseError(err);
@@ -277,42 +393,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Sign Up / Register with Email & Password
-  const signUpWithEmail = async (name: string, email: string, pass: string, role: UserRole = 'Auditor') => {
+  // Sign Up / Register with Email & Password (ADMIN APPROVAL WORKFLOW)
+  const signUpWithEmail = async (
+    name: string, 
+    email: string, 
+    pass: string, 
+    mobile?: string,
+    requestedRole: UserRole = 'Auditor'
+  ) => {
     setIsLoading(true);
     setAuthError(null);
     try {
       const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-      const nowIso = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      const nowIso = new Date().toISOString();
       const userRef = doc(db, 'users', cred.user.uid);
-      
-      const newProfile = {
+      const isBootstrap = email.trim().toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+
+      // Mandated: New registrations start as PENDING with USER role until approved by Admin
+      const initialRole: UserRole = isBootstrap ? 'Admin' : 'USER';
+      const initialStatus: UserStatus = isBootstrap ? 'APPROVED' : 'PENDING';
+      const initialUserId = isBootstrap ? 'CVS-ADMIN-000001' : null;
+
+      const newProfile: UserProfileData = {
         uid: cred.user.uid,
         name: name.trim() || email.split('@')[0],
+        full_name: name.trim() || email.split('@')[0],
         email: email.trim(),
-        role,
-        status: 'Active',
-        createdAt: nowIso,
+        mobile_number: mobile?.trim() || '',
+        role: initialRole,
+        status: initialStatus,
+        user_id: initialUserId,
+        created_at: nowIso,
+        approved_at: isBootstrap ? nowIso : null,
+        approved_by: isBootstrap ? 'SYSTEM_BOOTSTRAP' : null,
+        rejected_at: null,
+        rejected_by: null,
+        rejection_reason: null,
         lastLoginAt: nowIso,
+        avatar: '',
       };
 
       try {
         await setDoc(userRef, newProfile);
       } catch (err) {
-        console.warn('Could not write new profile to Firestore:', err);
+        console.warn('Could not write registration profile to Firestore:', err);
       }
 
-      const appUser: User = {
-        id: cred.user.uid,
-        username: email.split('@')[0],
-        fullName: newProfile.name,
-        email: newProfile.email,
-        role,
-        status: 'Active',
-        createdAt: nowIso,
-        lastLogin: nowIso,
-        isFirebaseUser: true,
-      };
+      const appUser = mapDocToUser(cred.user.uid, newProfile, email.trim());
+      setFirebaseUser(cred.user);
       setCurrentUser(appUser);
     } catch (err) {
       const msg = formatFirebaseError(err);
@@ -323,13 +451,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Sign In with Google
+  // Sign In with Google Federated Identity
   const signInWithGoogle = async () => {
     setIsLoading(true);
     setAuthError(null);
     try {
       const cred = await signInWithPopup(auth, googleProvider);
       const appUser = await syncUserProfile(cred.user);
+      setFirebaseUser(cred.user);
       setCurrentUser(appUser);
     } catch (err) {
       const msg = formatFirebaseError(err);
@@ -340,17 +469,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Password Reset
+  // Password Reset with strict email validation and error feedback
   const resetPassword = async (email: string): Promise<string> => {
-    if (!email || !email.includes('@')) {
+    const trimmed = email.trim();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
       throw new Error('Please enter a valid email address.');
     }
     try {
-      await sendPasswordResetEmail(auth, email.trim());
-      return 'If an account exists for this email, a password reset email has been requested.';
-    } catch {
-      // Per security mandate: Do not reveal whether an email exists
-      return 'If an account exists for this email, a password reset email has been requested.';
+      await sendPasswordResetEmail(auth, trimmed);
+      return 'Password reset instructions have been sent to your registered email.';
+    } catch (err: unknown) {
+      const msg = formatFirebaseError(err);
+      throw new Error(msg);
     }
   };
 
@@ -369,112 +499,133 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAuthError(null);
   };
 
-  // Fetch list of users for User Management View
+  // Fetch list of users for Admin User Management View
   const refreshUsersList = async () => {
     setIsLoadingUsers(true);
     try {
       const snap = await getDocs(collection(db, 'users'));
       const list: User[] = [];
       snap.forEach((docSnap) => {
-        const d = docSnap.data();
-        list.push({
-          id: docSnap.id,
-          username: (d.email || d.name || 'user').split('@')[0],
-          fullName: d.name || 'Officer',
-          email: d.email || '',
-          role: (d.role as UserRole) || 'Auditor',
-          status: (d.status as 'Active' | 'Disabled') || 'Active',
-          createdAt: d.createdAt || '2026-08-20',
-          lastLogin: d.lastLoginAt || d.createdAt || 'N/A',
-          isFirebaseUser: true,
-        });
+        const d = docSnap.data() as UserProfileData;
+        list.push(mapDocToUser(docSnap.id, d));
       });
 
-      // If empty in Firestore, include standard defaults
-      if (list.length === 0) {
-        setAllUsers([
-          {
-            id: 'usr-admin-1',
-            username: 'admin',
-            fullName: 'Chief Examination Auditor',
-            email: 'admin.cctv@examination-agency.gov.in',
-            role: 'Admin',
-            status: 'Active',
-            createdAt: '2026-08-01 09:00:00',
-            lastLogin: '2026-08-30 09:15:22',
-            isFirebaseUser: false,
-          },
-          {
-            id: 'usr-auditor-1',
-            username: 'auditor_01',
-            fullName: 'Senior CCTV Forensic Auditor',
-            email: 'auditor.delhi@examination-agency.gov.in',
-            role: 'Auditor',
-            status: 'Active',
-            createdAt: '2026-08-10 11:30:00',
-            lastLogin: '2026-08-30 10:42:01',
-            isFirebaseUser: false,
-          },
-          {
-            id: 'usr-viewer-1',
-            username: 'viewer_ops',
-            fullName: 'Operations Desk Officer',
-            email: 'viewer.ops@examination-agency.gov.in',
-            role: 'Viewer',
-            status: 'Active',
-            createdAt: '2026-08-15 14:20:00',
-            lastLogin: '2026-08-30 08:30:11',
-            isFirebaseUser: false,
-          },
-        ]);
-      } else {
-        setAllUsers(list);
-      }
+      // Sort with PENDING users at the top, then newest registrations
+      list.sort((a, b) => {
+        if (a.status === 'PENDING' && b.status !== 'PENDING') return -1;
+        if (a.status !== 'PENDING' && b.status === 'PENDING') return 1;
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      });
+
+      setAllUsers(list);
     } catch (err) {
-      console.warn('Could not fetch Firestore users (using offline list):', err);
-      setAllUsers([
-        {
-          id: 'usr-admin-1',
-          username: 'admin',
-          fullName: 'Chief Examination Auditor',
-          email: 'admin.cctv@examination-agency.gov.in',
-          role: 'Admin',
-          status: 'Active',
-          createdAt: '2026-08-01 09:00:00',
-          lastLogin: '2026-08-30 09:15:22',
-        },
-        {
-          id: 'usr-auditor-1',
-          username: 'auditor_01',
-          fullName: 'Senior CCTV Forensic Auditor',
-          email: 'auditor.delhi@examination-agency.gov.in',
-          role: 'Auditor',
-          status: 'Active',
-          createdAt: '2026-08-10 11:30:00',
-          lastLogin: '2026-08-30 10:42:01',
-        },
-        {
-          id: 'usr-viewer-1',
-          username: 'viewer_ops',
-          fullName: 'Operations Desk Officer',
-          email: 'viewer.ops@examination-agency.gov.in',
-          role: 'Viewer',
-          status: 'Active',
-          createdAt: '2026-08-15 14:20:00',
-          lastLogin: '2026-08-30 08:30:11',
-        },
-      ]);
+      console.warn('Could not fetch Firestore users:', err);
     } finally {
       setIsLoadingUsers(false);
     }
   };
 
+  // Admin Action: Approve a pending registration
+  const approveUser = async (userId: string, assignedRole: UserRole = 'Auditor'): Promise<string> => {
+    const target = allUsers.find(u => u.id === userId);
+    const newUserId = target?.userId || generateForensicUserId();
+    const nowIso = new Date().toISOString();
+    const adminUid = auth.currentUser?.uid || 'admin';
+
+    try {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, {
+        status: 'APPROVED',
+        role: assignedRole,
+        approved_at: nowIso,
+        approved_by: adminUid,
+        user_id: newUserId,
+        rejected_at: null,
+        rejected_by: null,
+        rejection_reason: null,
+      });
+    } catch (err) {
+      console.warn('Firestore approval update warning:', err);
+    }
+
+    setAllUsers(prev => prev.map(u => {
+      if (u.id === userId) {
+        return {
+          ...u,
+          status: 'APPROVED',
+          role: assignedRole,
+          userId: newUserId,
+          approvedAt: nowIso,
+          approvedBy: adminUid,
+          rejectedAt: null,
+          rejectedBy: null,
+          rejectionReason: null,
+        };
+      }
+      return u;
+    }));
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        status: 'APPROVED',
+        role: assignedRole,
+        userId: newUserId,
+      } : null);
+    }
+
+    return newUserId;
+  };
+
+  // Admin Action: Reject a registration request
+  const rejectUser = async (userId: string, reason?: string) => {
+    const nowIso = new Date().toISOString();
+    const adminUid = auth.currentUser?.uid || 'admin';
+    const finalReason = reason?.trim() || 'Registration request not approved by forensic administrator.';
+
+    try {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, {
+        status: 'REJECTED',
+        rejected_at: nowIso,
+        rejected_by: adminUid,
+        rejection_reason: finalReason,
+      });
+    } catch (err) {
+      console.warn('Firestore rejection update warning:', err);
+    }
+
+    setAllUsers(prev => prev.map(u => {
+      if (u.id === userId) {
+        return {
+          ...u,
+          status: 'REJECTED',
+          rejectedAt: nowIso,
+          rejectedBy: adminUid,
+          rejectionReason: finalReason,
+        };
+      }
+      return u;
+    }));
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        status: 'REJECTED',
+        rejectedAt: nowIso,
+        rejectedBy: adminUid,
+        rejectionReason: finalReason,
+      } : null);
+    }
+  };
+
+  // Admin Action: Update User Role
   const updateUserRole = async (userId: string, newRole: UserRole) => {
     try {
       const userRef = doc(db, 'users', userId);
       await updateDoc(userRef, { role: newRole });
     } catch (err) {
-      console.warn('Firestore update failed, updating local state:', err);
+      console.warn('Firestore update role failed:', err);
     }
     setAllUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
     if (currentUser && currentUser.id === userId) {
@@ -482,26 +633,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Admin Action: Toggle Active / Disabled
   const toggleUserStatus = async (userId: string, newStatus: 'Active' | 'Disabled') => {
+    const statusVal: UserStatus = newStatus === 'Active' ? 'APPROVED' : 'Disabled';
     try {
       const userRef = doc(db, 'users', userId);
-      await updateDoc(userRef, { status: newStatus });
+      await updateDoc(userRef, { status: statusVal });
     } catch (err) {
-      console.warn('Firestore status toggle failed, updating local state:', err);
+      console.warn('Firestore status toggle failed:', err);
     }
-    setAllUsers(prev => prev.map(u => u.id === userId ? { ...u, status: newStatus } : u));
+    setAllUsers(prev => prev.map(u => u.id === userId ? { ...u, status: statusVal } : u));
   };
 
-  const provisionUser = async (user: { name: string; email: string; role: UserRole }) => {
+  // Admin Action: Manually provision pre-approved user
+  const provisionUser = async (user: { name: string; email: string; role: UserRole; mobile?: string }) => {
     const newId = `usr-${Date.now().toString(36)}`;
-    const nowIso = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    const newProfile = {
+    const nowIso = new Date().toISOString();
+    const newUserId = generateForensicUserId();
+    const adminUid = auth.currentUser?.uid || 'admin';
+
+    const newProfile: UserProfileData = {
       uid: newId,
       name: user.name,
+      full_name: user.name,
       email: user.email,
+      mobile_number: user.mobile || '',
       role: user.role,
-      status: 'Active' as const,
-      createdAt: nowIso,
+      status: 'APPROVED',
+      user_id: newUserId,
+      created_at: nowIso,
+      approved_at: nowIso,
+      approved_by: adminUid,
       lastLoginAt: 'Never',
     };
 
@@ -509,36 +671,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userRef = doc(db, 'users', newId);
       await setDoc(userRef, newProfile);
     } catch (err) {
-      console.warn('Firestore create profile failed, adding to local state:', err);
+      console.warn('Firestore manual provision failed:', err);
     }
 
-    const newUserObj: User = {
-      id: newId,
-      username: user.email.split('@')[0],
-      fullName: user.name,
-      email: user.email,
-      role: user.role,
-      status: 'Active',
-      createdAt: nowIso,
-      lastLogin: 'Never',
-    };
-
+    const newUserObj = mapDocToUser(newId, newProfile);
     setAllUsers(prev => [newUserObj, ...prev]);
   };
 
-  // Role & Permission Checks
-  const isAdmin = currentUser?.role === 'Admin';
-  const isAuditor = currentUser?.role === 'Auditor';
-  const isViewer = currentUser?.role === 'Viewer';
+  // Status & Role calculations
+  const role: UserRole = currentUser?.role || 'USER';
+  const status: UserStatus = currentUser?.status || 'PENDING';
+  const isAuthenticated = !!currentUser && !!firebaseUser;
+  const isApproved = status === 'APPROVED' || status === 'Active';
+  const isAdmin = isApproved && (role === 'Admin' || role === 'ADMIN' || role === 'SUPER_ADMIN');
+  const isAuditor = isApproved && (role === 'Auditor');
+  const isViewer = isApproved && (role === 'Viewer');
 
   const hasRole = (roles: UserRole | UserRole[]): boolean => {
-    if (!currentUser || !currentUser.role) return false;
+    if (!currentUser || !currentUser.role || !isApproved) return false;
     const roleArray = Array.isArray(roles) ? roles : [roles];
     return roleArray.includes(currentUser.role);
   };
 
   const canPerform = (action: ForensicAction): boolean => {
-    if (!currentUser || !currentUser.role) return false;
+    if (!currentUser || !currentUser.role || !isApproved) return false;
     return hasRolePermission(currentUser.role, action);
   };
 
@@ -546,14 +702,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     action: ForensicAction, 
     onUnauthorized?: (reason: string) => void
   ): boolean => {
-    if (!currentUser) {
-      const reason = 'Authentication required to perform this action.';
+    if (!currentUser || !isApproved) {
+      const reason = 'Authorized and approved officer status required to execute this forensic action.';
       if (onUnauthorized) onUnauthorized(reason);
       return false;
     }
     const permitted = hasRolePermission(currentUser.role, action);
     if (!permitted) {
-      const reason = `Access Denied: Your role (${currentUser.role}) does not have permission to execute '${action}'. Contact a System Administrator.`;
+      const reason = `Access Denied: Your assigned role (${currentUser.role}) does not have permission to execute '${action}'. Contact a System Administrator.`;
       if (onUnauthorized) onUnauthorized(reason);
       return false;
     }
@@ -566,22 +722,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         firebaseUser,
         isLoading,
+        authLoading: isLoading,
         authError,
+        role,
+        status,
+        isAuthenticated,
+        isApproved,
+        isAdmin,
+        isAuditor,
+        isViewer,
         signInWithEmail,
         signUpWithEmail,
         signInWithGoogle,
         resetPassword,
         signOutUser,
         clearAuthError,
-        isAdmin,
-        isAuditor,
-        isViewer,
+        refreshCurrentUser,
         hasRole,
         canPerform,
         validatePermission,
         allUsers,
         isLoadingUsers,
         refreshUsersList,
+        approveUser,
+        rejectUser,
         updateUserRole,
         toggleUserStatus,
         provisionUser,

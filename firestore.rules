@@ -33,16 +33,15 @@ service cloud.firestore {
       return isSignedIn() && (
         request.auth.token.email == "vm812728@gmail.com" ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "Admin")
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'ADMIN', 'SUPER_ADMIN'])
       );
     }
 
     function isValidUserProfile(data) {
       return data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128 &&
-             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
              data.email is string && data.email.size() > 0 && data.email.size() <= 120 &&
-             data.role in ['Admin', 'Auditor', 'Viewer'] &&
-             data.status in ['Active', 'Disabled'];
+             data.role in ['Admin', 'ADMIN', 'SUPER_ADMIN', 'Auditor', 'Viewer', 'USER'] &&
+             data.status in ['PENDING', 'APPROVED', 'REJECTED', 'Active', 'Disabled'];
     }
 
     // User Profiles Collection
@@ -50,19 +49,31 @@ service cloud.firestore {
       allow get: if isSignedIn() && (isOwner(userId) || isAdmin());
       allow list: if isSignedIn() && (isAdmin() || (resource.data.uid == request.auth.uid));
 
-      // Create: User can create their own profile, or Admin can provision
+      // Create: User can register initial PENDING profile, or Admin can provision
       allow create: if isSignedIn() && isValidId(userId) && isValidUserProfile(incoming()) && (
-        (isOwner(userId) && incoming().uid == request.auth.uid) || isAdmin()
+        isAdmin() ||
+        (
+          isOwner(userId) &&
+          incoming().uid == request.auth.uid &&
+          (
+            // Normal user MUST start as PENDING with unprivileged role
+            (incoming().status == 'PENDING' && incoming().role in ['USER', 'Auditor', 'Viewer']) ||
+            // Bootstrap administrator is pre-approved
+            request.auth.token.email == "vm812728@gmail.com"
+          )
+        )
       );
 
-      // Update: Owner can update their name/avatar/lastLoginAt, or Admin can update role/status
+      // Update: Admin can change role/status/approval, Owner can only update personal profile fields
       allow update: if isSignedIn() && isValidId(userId) && isValidUserProfile(incoming()) && (
         isAdmin() ||
-        (isOwner(userId) &&
-         incoming().uid == existing().uid &&
-         incoming().email == existing().email &&
-         incoming().role == existing().role &&
-         incoming().status == existing().status)
+        (
+          isOwner(userId) &&
+          incoming().uid == existing().uid &&
+          incoming().email == existing().email &&
+          incoming().role == existing().role &&
+          incoming().status == existing().status
+        )
       );
 
       // Delete: Only Admin

@@ -1,14 +1,22 @@
-export type UserRole = 'Admin' | 'Auditor' | 'Viewer';
+export type UserRole = 'Admin' | 'ADMIN' | 'SUPER_ADMIN' | 'Auditor' | 'Viewer' | 'USER';
+export type UserStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'Active' | 'Disabled';
 
 export interface User {
   id: string;
   username: string;
   fullName: string;
   email?: string;
+  mobileNumber?: string;
   role: UserRole;
   avatar?: string;
-  status?: 'Active' | 'Disabled';
+  status?: UserStatus;
+  userId?: string; // Human-readable activated forensic identifier (e.g. CVS-US-892011)
   createdAt?: string;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
+  rejectedAt?: string | null;
+  rejectedBy?: string | null;
+  rejectionReason?: string | null;
   lastLogin?: string;
   isFirebaseUser?: boolean;
 }

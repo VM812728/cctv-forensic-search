@@ -34,7 +34,9 @@ export const LoginView: React.FC = () => {
   const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
   const [selectedRole, setSelectedRole] = useState<UserRole>('Auditor');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
@@ -56,8 +58,8 @@ export const LoginView: React.FC = () => {
         }
         await signInWithEmail(email, password);
       } else if (mode === 'signup') {
-        if (!email.trim() || !password.trim()) {
-          setFeedbackMessage({ type: 'error', text: 'Please fill in all required fields.' });
+        if (!fullName.trim() || !email.trim() || !password.trim()) {
+          setFeedbackMessage({ type: 'error', text: 'Please fill in all required fields (Full Name, Email, Password).' });
           setIsSubmitting(false);
           return;
         }
@@ -66,14 +68,24 @@ export const LoginView: React.FC = () => {
           setIsSubmitting(false);
           return;
         }
-        await signUpWithEmail(fullName || email.split('@')[0], email, password, selectedRole);
-      } else if (mode === 'forgot') {
-        if (!email.trim()) {
-          setFeedbackMessage({ type: 'error', text: 'Please enter your account email address.' });
+        if (password !== confirmPassword) {
+          setFeedbackMessage({ type: 'error', text: 'Passwords do not match. Please re-enter confirm password.' });
           setIsSubmitting(false);
           return;
         }
-        const message = await resetPassword(email);
+        await signUpWithEmail(fullName.trim(), email.trim(), password, mobileNumber.trim(), selectedRole);
+        setFeedbackMessage({
+          type: 'success',
+          text: 'Your registration request has been submitted successfully. Your account is currently pending administrator approval. Once your account is approved, your User ID will be activated and you will be able to access the application.'
+        });
+      } else if (mode === 'forgot') {
+        const trimmedEmail = email.trim();
+        if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+          setFeedbackMessage({ type: 'error', text: 'Please enter a valid registered email address.' });
+          setIsSubmitting(false);
+          return;
+        }
+        const message = await resetPassword(trimmedEmail);
         setFeedbackMessage({ type: 'success', text: message });
       }
     } catch (err: unknown) {
@@ -219,26 +231,43 @@ export const LoginView: React.FC = () => {
           {/* Primary Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             {mode === 'signup' && (
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  Full Officer Name
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    required
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    placeholder="e.g. Vishal Mishra (Lead Auditor)"
-                    className="w-full bg-slate-950/70 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                  />
+              <>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Full Officer / User Name *
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      required
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="e.g. Inspector Vishal Sharma"
+                      className="w-full bg-slate-950/70 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
+                    />
+                  </div>
                 </div>
-              </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Mobile / Contact Number (Optional)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="tel"
+                      value={mobileNumber}
+                      onChange={(e) => setMobileNumber(e.target.value)}
+                      placeholder="e.g. +91 98765 43210"
+                      className="w-full bg-slate-950/70 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
+                    />
+                  </div>
+                </div>
+              </>
             )}
 
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                Official Email Address
+                Official Email Address *
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
@@ -254,59 +283,70 @@ export const LoginView: React.FC = () => {
             </div>
 
             {mode !== 'forgot' && (
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-slate-300">
-                    Password / Access Credential
-                  </label>
-                  {mode === 'signin' && (
+              <>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-semibold text-slate-300">
+                      Password * {mode === 'signup' && <span className="text-[10px] text-slate-400 font-normal">(min 6 chars)</span>}
+                    </label>
+                    {mode === 'signin' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMode('forgot');
+                          setFeedbackMessage(null);
+                        }}
+                        className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors cursor-pointer"
+                      >
+                        Forgot Password?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Enter security password"
+                      className="w-full bg-slate-950/70 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors font-mono"
+                    />
                     <button
                       type="button"
-                      onClick={() => {
-                        setMode('forgot');
-                        setFeedbackMessage(null);
-                      }}
-                      className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3.5 top-3 text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
                     >
-                      Forgot Password?
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
-                  )}
+                  </div>
                 </div>
-                <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter security password"
-                    className="w-full bg-slate-950/70 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 top-3 text-slate-500 hover:text-slate-300 transition-colors"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
+
+                {mode === 'signup' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                      Confirm Password *
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="Re-enter security password"
+                        className="w-full bg-slate-950/70 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {mode === 'signup' && (
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  Requested Forensic Role
-                </label>
-                <select
-                  value={selectedRole}
-                  onChange={(e) => setSelectedRole(e.target.value as UserRole)}
-                  className="w-full bg-slate-950/70 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
-                >
-                  <option value="Auditor">AUDITOR (Search, Review Matches, Extract Clips)</option>
-                  <option value="Admin">ADMIN (Full Control, User & Security Management)</option>
-                  <option value="Viewer">VIEWER (Read-only Case & Report Inspections)</option>
-                </select>
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 leading-relaxed">
+                <div className="font-semibold text-amber-200 mb-0.5">Admin Approval Required</div>
+                Newly registered accounts are submitted to the administrator for review. Application access and your unique User ID are issued upon approval.
               </div>
             )}
 

@@ -164,7 +164,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div className="truncate">
               <div className="text-[11px] font-semibold text-slate-200 truncate">{currentUser.fullName || currentUser.username}</div>
-              <div className="text-[10px] text-slate-400 capitalize">{currentUser.role} Role</div>
+              <div className="text-[10px] text-blue-300 font-mono truncate">{currentUser.userId ? `${currentUser.userId} • ${currentUser.role}` : `${currentUser.role} Role`}</div>
             </div>
           </div>
           <div className="flex items-center gap-1">

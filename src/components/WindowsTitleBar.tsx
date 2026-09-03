@@ -112,17 +112,24 @@ export const WindowsTitleBar: React.FC<WindowsTitleBarProps> = ({
             className="flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 backdrop-blur-xs transition-colors cursor-pointer"
           >
             <Lock className="w-2.5 h-2.5 text-blue-400" />
-            <span className="font-semibold text-slate-200">{currentUser.username}</span>
-            <span className="text-slate-400">({currentUser.role})</span>
+            <span className="font-semibold text-slate-200">{currentUser.fullName || currentUser.username}</span>
+            <span className="text-blue-300 font-mono text-[10px]">[{currentUser.userId || currentUser.role}]</span>
             <ChevronDown className="w-3 h-3 text-slate-400" />
           </button>
 
           {showUserMenu && (
-            <div className="absolute right-0 mt-1 w-52 bg-slate-900/95 border border-white/15 rounded-xl shadow-2xl backdrop-blur-xl p-2 z-50 text-xs text-slate-300 animate-in fade-in slide-in-from-top-1">
-              <div className="px-2.5 py-1.5 border-b border-white/10 mb-1">
+            <div className="absolute right-0 mt-1 w-56 bg-slate-900/95 border border-white/15 rounded-xl shadow-2xl backdrop-blur-xl p-2.5 z-50 text-xs text-slate-300 animate-in fade-in slide-in-from-top-1">
+              <div className="px-2 py-1.5 border-b border-white/10 mb-1.5">
                 <div className="font-semibold text-white truncate">{currentUser.fullName || currentUser.username}</div>
                 <div className="text-[11px] text-slate-400 truncate">{currentUser.email || `${currentUser.username}@workstation.local`}</div>
-                <div className="text-[10px] text-blue-400 font-mono mt-0.5">{currentUser.role} Role</div>
+                <div className="flex items-center justify-between text-[10px] font-mono mt-1 pt-1 border-t border-white/5">
+                  <span className="text-slate-400">User ID:</span>
+                  <span className="text-blue-300 font-bold">{currentUser.userId || 'ACTIVE-OFFICER'}</span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] font-mono mt-0.5">
+                  <span className="text-slate-400">Role:</span>
+                  <span className="text-emerald-400 font-bold">{currentUser.role}</span>
+                </div>
               </div>
 
               {onLogout && (

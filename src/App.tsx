@@ -15,6 +15,8 @@ import { UserManagementView } from './components/UserManagementView';
 import { BenchmarkModal } from './components/BenchmarkModal';
 import { WebcamModal } from './components/WebcamModal';
 import { LoginView } from './components/LoginView';
+import { PendingApprovalView } from './components/PendingApprovalView';
+import { RejectedAccountView } from './components/RejectedAccountView';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 import { 
@@ -49,6 +51,7 @@ function ForensicWorkstation() {
     currentUser, 
     isLoading, 
     signOutUser, 
+    refreshCurrentUser,
     isAdmin,
     isAuditor,
     isViewer,
@@ -641,6 +644,40 @@ function ForensicWorkstation() {
   // If not authenticated, render Login Page as the mandatory first screen
   if (!currentUser) {
     return <LoginView />;
+  }
+
+  // If user registration is pending administrator review & approval
+  if (currentUser.status === 'PENDING') {
+    return (
+      <PendingApprovalView
+        user={currentUser}
+        onSignOut={signOutUser}
+        onRefresh={refreshCurrentUser}
+      />
+    );
+  }
+
+  // If user registration has been rejected by administrator
+  if (currentUser.status === 'REJECTED') {
+    return (
+      <RejectedAccountView
+        user={currentUser}
+        onSignOut={signOutUser}
+      />
+    );
+  }
+
+  // If account has been disabled
+  if (currentUser.status === 'Disabled') {
+    return (
+      <RejectedAccountView
+        user={{
+          ...currentUser,
+          rejectionReason: 'This forensic account has been disabled by the system administrator.'
+        }}
+        onSignOut={signOutUser}
+      />
+    );
   }
 
   // Render Authenticated Forensic Workstation
