@@ -14,7 +14,7 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # Server Configuration
 HOST = os.getenv("HOST", "0.0.0.0")
-PORT = int(os.getenv("PORT", "8000"))
+PORT = int(os.getenv("PORT", "8001"))
 DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
 
 # CORS Origins allowed

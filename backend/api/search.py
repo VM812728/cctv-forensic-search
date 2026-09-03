@@ -5,7 +5,8 @@ from backend.models.schemas import (
     StartSearchRequest,
     StartSearchResponse,
     SearchStatusResponse,
-    SearchResultMatchSchema
+    SearchResultMatchSchema,
+    RawFaceMatch
 )
 from backend.services.search_service import CandidateRepository, SearchJobManager
 from backend.services.face_engine import face_engine, _TEMP_EMBEDDINGS
@@ -133,6 +134,7 @@ async def get_search_raw_matches(search_id: str = FPath(..., description="Unique
     return SearchJobManager.get_raw_matches(search_id)
 
 @router.get("/{search_id}/pass2-matches", response_model=List[RawFaceMatch])
+@router.get("/{search_id}/matches/pass2", response_model=List[RawFaceMatch])
 async def get_search_pass2_matches(search_id: str = FPath(..., description="Unique Search ID")):
     """
     Returns Stage H Pass 2 dense verification raw face matches.

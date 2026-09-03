@@ -20,13 +20,13 @@ import {
   ScanFace,
   ServerCrash
 } from 'lucide-react';
-import { Case, Candidate, CCTVVideo, AppSettings, CandidatePhotoQuality, DetectedFaceInfo } from '../types';
+import { Case, Candidate, CCTVVideo, AppSettings, CandidatePhotoQuality, DetectedFaceInfo, SearchConfigParams } from '../types';
 import { analyzeCandidatePhotoQuality } from '../services/faceAnalysisEngine';
 import { generateCandidateEmbedding, BackendConnectionError } from '../services/api';
 import { SAMPLE_CANDIDATES, SAMPLE_CCTV_VIDEOS } from '../services/mockData';
 
 interface NewSearchViewProps {
-  onStartSearch: (newCase: Case, selectedVideoIds: string[]) => void;
+  onStartSearch: (newCase: Case, selectedVideoIds: string[], searchConfig?: Partial<SearchConfigParams>) => void;
   availableVideos: CCTVVideo[];
   settings: AppSettings;
   onOpenWebcam: (onCapture: (dataUrl: string) => void) => void;
@@ -102,6 +102,7 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
         setIsGeneratingEmbedding(true);
         try {
           const emb = await generateCandidateEmbedding(url, firstFace.bounding_box, firstFace.face_id);
+          setSelectedFaceId(emb.face_id);
           setEmbeddingMessage(emb.message);
         } catch (embErr: any) {
           console.warn('Embedding extraction notice:', embErr);
@@ -126,6 +127,7 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
     setIsGeneratingEmbedding(true);
     try {
       const emb = await generateCandidateEmbedding(photoUrl, face.bounding_box, face.face_id);
+      setSelectedFaceId(emb.face_id);
       setEmbeddingMessage(`Selected Face (${face.face_width_px}x${face.face_height_px}px): ${emb.message}`);
     } catch (embErr: any) {
       console.warn('Embedding extraction notice:', embErr);
@@ -188,12 +190,20 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
       alert('Please provide a candidate photograph before starting search.');
       return;
     }
+    if (isAnalyzingPhoto || isGeneratingEmbedding) {
+      alert('Candidate biometric analysis and embedding generation is in progress. Please wait for completion.');
+      return;
+    }
+    if (!selectedFaceId) {
+      alert('No verified candidate face embedding was registered. Please upload a clear candidate photo and ensure the backend is connected.');
+      return;
+    }
     if (selectedVideoIds.length === 0) {
       alert('Please select at least one CCTV camera video file to search.');
       return;
     }
 
-    const realCandidateId = selectedFaceId || `cand-${Date.now()}`;
+    const realCandidateId = selectedFaceId;
     const candidate: Candidate = {
       id: realCandidateId,
       caseId: caseCode,
@@ -231,7 +241,16 @@ export const NewSearchView: React.FC<NewSearchViewProps> = ({
       clipsCount: 0,
     };
 
-    onStartSearch(newCase, selectedVideoIds);
+    onStartSearch(newCase, selectedVideoIds, {
+      sampling_fps: sampleFps,
+      match_threshold: similarityThreshold * 0.8,
+      high_confidence_threshold: similarityThreshold,
+      pre_roll_seconds: settings.preRollSeconds || 5,
+      post_roll_seconds: settings.postRollSeconds || 5,
+      verification_enabled: true,
+      verification_sampling_fps: 8,
+      verification_threshold: similarityThreshold * 0.8,
+    });
   };
 
   return (

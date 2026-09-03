@@ -28,7 +28,7 @@ import {
   SAMPLE_CLIPS,
   SAMPLE_CANDIDATES
 } from './services/mockData';
-import { Case, SearchResultMatch, ClipEvidence, CCTVVideo, AppSettings, AuditLog, User, SearchJob } from './types';
+import { Case, SearchResultMatch, ClipEvidence, CCTVVideo, AppSettings, AuditLog, User, SearchJob, SearchConfigParams } from './types';
 import { generateEvidenceHash } from './services/cryptoUtils';
 import { generatePdfReport } from './services/reportGenerator';
 import { 
@@ -200,7 +200,11 @@ function ForensicWorkstation() {
   };
 
   // Handle Launch Search (Connected to Real Backend)
-  const handleStartSearch = async (newCase: Case, selectedVideoIds: string[]) => {
+  const handleStartSearch = async (
+    newCase: Case, 
+    selectedVideoIds: string[], 
+    customConfig?: Partial<SearchConfigParams>
+  ) => {
     if (!validatePermission('SEARCH_EXECUTE', (reason) => {
       triggerSecurityAlert('Search Initiation Denied', reason, newCase.id);
     })) {
@@ -236,19 +240,21 @@ function ForensicWorkstation() {
 
     // Attempt real backend search execution
     try {
+      const targetCandidateId = newCase.candidateId || newCase.candidate?.id || '';
       const startRes = await startSearch({
         case_id: newCase.id,
-        candidate_id: newCase.candidateId,
+        candidate_id: targetCandidateId,
+        face_id: targetCandidateId,
         selected_video_ids: selectedVideoIds,
         config: {
-          sampling_fps: settings.frameSampleFps || 3.0,
-          match_threshold: settings.similarityThresholdMedium || 0.50,
-          high_confidence_threshold: settings.similarityThresholdHigh || 0.65,
-          pre_roll_seconds: settings.preRollSeconds || 5,
-          post_roll_seconds: settings.postRollSeconds || 5,
-          verification_enabled: true,
-          verification_sampling_fps: 8,
-          verification_threshold: settings.similarityThresholdMedium || 0.50,
+          sampling_fps: customConfig?.sampling_fps ?? settings.frameSampleFps ?? 3.0,
+          match_threshold: customConfig?.match_threshold ?? settings.similarityThresholdMedium ?? 0.50,
+          high_confidence_threshold: customConfig?.high_confidence_threshold ?? settings.similarityThresholdHigh ?? 0.65,
+          pre_roll_seconds: customConfig?.pre_roll_seconds ?? settings.preRollSeconds ?? 5,
+          post_roll_seconds: customConfig?.post_roll_seconds ?? settings.postRollSeconds ?? 5,
+          verification_enabled: customConfig?.verification_enabled ?? true,
+          verification_sampling_fps: customConfig?.verification_sampling_fps ?? 8,
+          verification_threshold: customConfig?.verification_threshold ?? settings.similarityThresholdMedium ?? 0.50,
         }
       });
 
