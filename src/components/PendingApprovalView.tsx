@@ -94,8 +94,7 @@ export const PendingApprovalView: React.FC<PendingApprovalViewProps> = ({
               Registration Request Under Review
             </h1>
             <p className="text-xs sm:text-sm text-slate-300 mt-2 leading-relaxed max-w-md mx-auto">
-              Your registration request has been submitted successfully.
-              Your account is currently pending administrator approval.
+              Your registration request has been submitted successfully. Your account is currently pending administrator approval. Once your account is approved, your User ID will be activated and you will be able to access the application.
             </p>
           </div>
 

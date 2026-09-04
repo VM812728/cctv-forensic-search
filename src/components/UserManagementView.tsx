@@ -72,9 +72,15 @@ export const UserManagementView: React.FC = () => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Guard: Strictly require verified APPROVED status + Admin role
+  const isAdmin = currentUser?.status === 'APPROVED' && 
+    (currentUser?.role === 'Admin' || currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPER_ADMIN');
+
   useEffect(() => {
-    refreshUsersList();
-  }, []);
+    if (isAdmin) {
+      refreshUsersList();
+    }
+  }, [isAdmin]);
 
   // Filtered lists
   const pendingUsers = useMemo(() => {
@@ -207,8 +213,6 @@ export const UserManagementView: React.FC = () => {
       setActionError('Failed to toggle status.');
     }
   };
-
-  const isAdmin = currentUser?.role === 'Admin' || currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPER_ADMIN';
 
   if (!isAdmin) {
     return (

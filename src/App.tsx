@@ -531,7 +531,7 @@ function ForensicWorkstation() {
       status: 'Review Required',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      createdBy: currentUser?.username || 'admin',
+      createdBy: currentUser?.username || 'system',
       videoIds: availableVideos.map(v => v.id),
       totalMatchesCount: 4,
       confirmedMatchesCount: 1,

@@ -29,12 +29,13 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    // Verified Administrator: Must have an approved Firestore profile with Admin role.
+    // Email address alone is NEVER an authorization boundary.
     function isAdmin() {
-      return isSignedIn() && (
-        request.auth.token.email == "vm812728@gmail.com" ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'ADMIN', 'SUPER_ADMIN'])
-      );
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'ADMIN', 'SUPER_ADMIN'] &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['APPROVED', 'Active'];
     }
 
     function isValidUserProfile(data) {
@@ -46,25 +47,32 @@ service cloud.firestore {
 
     // User Profiles Collection
     match /users/{userId} {
+      // Direct get: Normal user can read ONLY their own profile; Admin can read any profile
       allow get: if isSignedIn() && (isOwner(userId) || isAdmin());
-      allow list: if isSignedIn() && (isAdmin() || (resource.data.uid == request.auth.uid));
 
-      // Create: User can register initial PENDING profile, or Admin can provision
+      // Collection list: ONLY verified Admin can list the users collection
+      allow list: if isSignedIn() && isAdmin();
+
+      // Create: Normal user registering must start as PENDING with unprivileged role,
+      // cannot set user_id, and cannot self-approve. Or Admin can provision accounts.
       allow create: if isSignedIn() && isValidId(userId) && isValidUserProfile(incoming()) && (
         isAdmin() ||
         (
           isOwner(userId) &&
           incoming().uid == request.auth.uid &&
-          (
-            // Normal user MUST start as PENDING with unprivileged role
-            (incoming().status == 'PENDING' && incoming().role in ['USER', 'Auditor', 'Viewer']) ||
-            // Bootstrap administrator is pre-approved
-            request.auth.token.email == "vm812728@gmail.com"
-          )
+          incoming().status == 'PENDING' &&
+          incoming().role in ['USER', 'Auditor', 'Viewer'] &&
+          (!('user_id' in incoming()) || incoming().user_id == null) &&
+          (!('approved_by' in incoming()) || incoming().approved_by == null) &&
+          (!('approved_at' in incoming()) || incoming().approved_at == null) &&
+          (!('rejected_by' in incoming()) || incoming().rejected_by == null) &&
+          (!('rejected_at' in incoming()) || incoming().rejected_at == null)
         )
       );
 
-      // Update: Admin can change role/status/approval, Owner can only update personal profile fields
+      // Update: Admin can change role/status/approval/userId.
+      // Owner can update personal profile fields ONLY (e.g. name, avatar, lastLoginAt).
+      // Owner can NEVER update role, status, user_id, approved_by, approved_at, rejected_by, rejected_at, rejection_reason, uid, or email!
       allow update: if isSignedIn() && isValidId(userId) && isValidUserProfile(incoming()) && (
         isAdmin() ||
         (
@@ -72,11 +80,17 @@ service cloud.firestore {
           incoming().uid == existing().uid &&
           incoming().email == existing().email &&
           incoming().role == existing().role &&
-          incoming().status == existing().status
+          incoming().status == existing().status &&
+          (!('user_id' in existing()) || incoming().user_id == existing().user_id) &&
+          (!('approved_by' in existing()) || incoming().approved_by == existing().approved_by) &&
+          (!('approved_at' in existing()) || incoming().approved_at == existing().approved_at) &&
+          (!('rejected_by' in existing()) || incoming().rejected_by == existing().rejected_by) &&
+          (!('rejected_at' in existing()) || incoming().rejected_at == existing().rejected_at) &&
+          (!('rejection_reason' in existing()) || incoming().rejection_reason == existing().rejection_reason)
         )
       );
 
-      // Delete: Only Admin
+      // Delete: Only verified Admin
       allow delete: if isAdmin();
     }
   }
