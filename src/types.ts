@@ -18,7 +18,7 @@ export interface User {
   rejectedBy?: string | null;
   rejectionReason?: string | null;
   lastLogin?: string;
-  isFirebaseUser?: boolean;
+  isSupabaseUser?: boolean;
 }
 
 export type CaseStatus = 

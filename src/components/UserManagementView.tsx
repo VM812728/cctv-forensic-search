@@ -130,7 +130,7 @@ export const UserManagementView: React.FC = () => {
     setIsProcessing(true);
     setActionError(null);
     try {
-      const uid = await approveUser(showApproveModal.id, approvalRole);
+      const uid = await approveUser(showApproveModal.id, approvalRole, assignedUserId);
       setActionSuccess(`Officer ${showApproveModal.fullName} approved. User ID ${uid} issued.`);
       setShowApproveModal(null);
       setTimeout(() => setActionSuccess(null), 5000);

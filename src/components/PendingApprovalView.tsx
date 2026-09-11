@@ -192,7 +192,7 @@ export const PendingApprovalView: React.FC<PendingApprovalViewProps> = ({
           <span>Zero Unapproved Access • Role-Based Forensic Security</span>
         </div>
         <div className="flex items-center gap-2 font-mono text-slate-500">
-          <span>Protected by Firebase Rules</span>
+          <span>Protected by Supabase Row Level Security</span>
         </div>
       </footer>
     </div>

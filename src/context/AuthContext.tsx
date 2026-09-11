@@ -1,22 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import {
-  auth,
-  db,
-  googleProvider,
-  signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  firebaseSignOut,
-  sendPasswordResetEmail,
-  onAuthStateChanged,
-  doc,
-  getDoc,
-  setDoc,
-  updateDoc,
-  getDocs,
-  collection,
-  FirebaseUser
-} from '../services/firebase';
+import { User as SupabaseUser } from '@supabase/supabase-js';
+import { supabase, isSupabaseConfigured } from '../services/supabase';
 import { User, UserRole, UserStatus } from '../types';
 
 export type ForensicAction = 
@@ -88,29 +72,28 @@ export const hasRolePermission = (role: UserRole | string | undefined, action: F
   return permissions.includes(action);
 };
 
-export interface UserProfileData {
-  uid: string;
-  name?: string;
-  full_name?: string;
+export interface UserProfileRow {
+  id: string;
+  full_name: string;
   email: string;
-  mobile_number?: string;
+  mobile?: string | null;
   role: UserRole;
   status: UserStatus;
   user_id?: string | null;
-  created_at?: string;
-  approved_at?: string | null;
   approved_by?: string | null;
-  rejected_at?: string | null;
+  approved_at?: string | null;
   rejected_by?: string | null;
+  rejected_at?: string | null;
   rejection_reason?: string | null;
-  lastLoginAt?: string;
-  createdAt?: string;
-  avatar?: string;
+  last_login_at?: string | null;
+  avatar?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface AuthContextType {
   currentUser: User | null;
-  firebaseUser: FirebaseUser | null;
+  supabaseUser: SupabaseUser | null;
   isLoading: boolean;
   authLoading: boolean;
   authError: string | null;
@@ -121,6 +104,7 @@ interface AuthContextType {
   isAdmin: boolean;
   isAuditor: boolean;
   isViewer: boolean;
+  isSupabaseReady: boolean;
 
   signInWithEmail: (email: string, pass: string) => Promise<void>;
   signUpWithEmail: (name: string, email: string, pass: string, mobile?: string, role?: UserRole) => Promise<void>;
@@ -142,7 +126,7 @@ interface AuthContextType {
   allUsers: User[];
   isLoadingUsers: boolean;
   refreshUsersList: () => Promise<void>;
-  approveUser: (userId: string, assignedRole?: UserRole) => Promise<string>;
+  approveUser: (userId: string, assignedRole?: UserRole, customUserId?: string) => Promise<string>;
   rejectUser: (userId: string, reason?: string) => Promise<void>;
   updateUserRole: (userId: string, newRole: UserRole) => Promise<void>;
   toggleUserStatus: (userId: string, newStatus: 'Active' | 'Disabled') => Promise<void>;
@@ -159,7 +143,7 @@ export function generateForensicUserId(): string {
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [supabaseUser, setSupabaseUser] = useState<SupabaseUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [authError, setAuthError] = useState<string | null>(null);
 
@@ -167,194 +151,248 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(false);
 
-  // Guard to prevent concurrent sync operations
+  // Guard against concurrent registration/sync race conditions
   const isSyncingRef = useRef<boolean>(false);
   const isRegisteringRef = useRef<boolean>(false);
 
-  const formatFirebaseError = (error: unknown): string => {
-    if (typeof error !== 'object' || error === null || !('code' in error)) {
-      return error instanceof Error ? error.message : 'An unknown authentication error occurred.';
+  const formatSupabaseError = (error: unknown): string => {
+    if (!error) return 'An unknown authentication error occurred.';
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+
+    if (lower.includes('invalid login credentials')) {
+      return 'Invalid email or password. Please verify your credentials.';
     }
-    const code = (error as { code: string }).code;
-    switch (code) {
-      case 'auth/invalid-email':
-        return 'Please enter a valid email address.';
-      case 'auth/user-not-found':
-        return 'No registered account found with this email address.';
-      case 'auth/wrong-password':
-      case 'auth/invalid-credential':
-        return 'Invalid email or password. Please verify your credentials.';
-      case 'auth/user-disabled':
-        return 'Your account has been disabled. Please contact the administrator.';
-      case 'auth/email-already-in-use':
-        return 'This email address is already registered. Please sign in instead.';
-      case 'auth/weak-password':
-        return 'Password is too weak. Please use at least 6 characters.';
-      case 'auth/popup-closed-by-user':
-        return 'Google sign-in popup was closed before completing.';
-      case 'auth/popup-blocked':
-        return 'Sign-in popup was blocked by browser. Please allow popups for this site.';
-      case 'auth/network-request-failed':
-        return 'Unable to connect to authentication servers. Please verify internet connection.';
-      case 'auth/too-many-requests':
-        return 'Too many attempts. Access to this account has been temporarily restricted. Please try again later or reset password.';
-      case 'auth/unauthorized-domain':
-        return 'This domain is not authorized in Firebase Auth settings. Please register domain in Firebase Console.';
-      case 'auth/operation-not-allowed':
-        return 'Email/Password authentication is currently disabled in Firebase Console (project peppy-voice-zlk09). Please enable the Email/Password sign-in provider in Firebase Console > Authentication > Sign-in method, or use Google Sign-In.';
-      default:
-        return (error as { message?: string }).message || 'Authentication operation failed.';
+    if (lower.includes('user already registered') || lower.includes('email already in use')) {
+      return 'This email address is already registered. Please sign in instead.';
     }
+    if (lower.includes('password should be at least') || lower.includes('weak password')) {
+      return 'Password is too weak. Please use at least 6 characters.';
+    }
+    if (lower.includes('email not confirmed')) {
+      return 'Email confirmation is pending. Please verify your inbox or contact administrator.';
+    }
+    if (lower.includes('rate limit') || lower.includes('too many requests')) {
+      return 'Too many requests. Please wait a few moments before trying again.';
+    }
+    if (lower.includes('invalid email')) {
+      return 'Please enter a valid email address format.';
+    }
+    if (lower.includes('fetch') || lower.includes('network')) {
+      return 'Unable to connect to Supabase servers. Please check your internet connection.';
+    }
+    return message;
   };
 
-  // Convert raw Firestore doc data into application User model
-  // Strict authorization: Role and status come solely from verified Firestore profile
-  const mapDocToUser = (uid: string, data: UserProfileData, fallbackEmail?: string | null): User => {
+  // Convert raw database row into application User model
+  const mapRowToUser = (row: UserProfileRow, fallbackEmail?: string | null): User => {
     // Normalize role: Admin, Auditor, Viewer, USER
     let role: UserRole = 'USER';
-    if (data.role === 'Admin' || data.role === 'ADMIN' || data.role === 'SUPER_ADMIN') {
+    if (row.role === 'Admin' || row.role === 'ADMIN' || row.role === 'SUPER_ADMIN') {
       role = 'Admin';
-    } else if (data.role === 'Auditor') {
+    } else if (row.role === 'Auditor') {
       role = 'Auditor';
-    } else if (data.role === 'Viewer') {
+    } else if (row.role === 'Viewer') {
       role = 'Viewer';
     }
 
-    // Normalize status: strictly require APPROVED or Active in document to be approved
+    // Normalize status: strictly require APPROVED or Active in database row to be approved
     let status: UserStatus = 'PENDING';
-    if (data.status === 'APPROVED' || data.status === 'Active') {
+    if (row.status === 'APPROVED' || row.status === 'Active') {
       status = 'APPROVED';
-    } else if (data.status === 'REJECTED') {
+    } else if (row.status === 'REJECTED') {
       status = 'REJECTED';
-    } else if (data.status === 'Disabled') {
+    } else if (row.status === 'Disabled') {
       status = 'Disabled';
     }
 
-    const name = data.full_name || data.name || (data.email ? data.email.split('@')[0] : 'Forensic Officer');
-    const email = data.email || fallbackEmail || '';
+    const name = row.full_name || (row.email ? row.email.split('@')[0] : 'Forensic Officer');
+    const email = row.email || fallbackEmail || '';
 
     return {
-      id: uid,
+      id: row.id,
       username: email ? email.split('@')[0] : 'officer',
       fullName: name,
       email,
-      mobileNumber: data.mobile_number || '',
+      mobileNumber: row.mobile || '',
       role,
       status,
-      userId: data.user_id || undefined,
-      avatar: data.avatar || undefined,
-      createdAt: data.created_at || data.createdAt || new Date().toISOString(),
-      approvedAt: data.approved_at || null,
-      approvedBy: data.approved_by || null,
-      rejectedAt: data.rejected_at || null,
-      rejectedBy: data.rejected_by || null,
-      rejectionReason: data.rejection_reason || null,
-      lastLogin: data.lastLoginAt || new Date().toISOString(),
-      isFirebaseUser: true,
+      userId: row.user_id || undefined,
+      avatar: row.avatar || undefined,
+      createdAt: row.created_at || new Date().toISOString(),
+      approvedAt: row.approved_at || null,
+      approvedBy: row.approved_by || null,
+      rejectedAt: row.rejected_at || null,
+      rejectedBy: row.rejected_by || null,
+      rejectionReason: row.rejection_reason || null,
+      lastLogin: row.last_login_at || new Date().toISOString(),
+      isSupabaseUser: true,
     };
   };
 
-  // Synchronize Firestore profile for authenticated user
-  const syncUserProfile = useCallback(async (fbUser: FirebaseUser): Promise<User> => {
-    const userRef = doc(db, 'users', fbUser.uid);
+  // Synchronize PostgreSQL public.profiles row for authenticated user
+  const syncUserProfile = useCallback(async (sbUser: SupabaseUser): Promise<User> => {
+    if (!isSupabaseConfigured) {
+      const nowIso = new Date().toISOString();
+      return {
+        id: sbUser.id,
+        username: (sbUser.email || 'officer').split('@')[0],
+        fullName: sbUser.user_metadata?.full_name || 'Forensic Officer',
+        email: sbUser.email || '',
+        role: 'USER',
+        status: 'PENDING',
+        createdAt: nowIso,
+        lastLogin: nowIso,
+        isSupabaseUser: true,
+      };
+    }
+
     const nowIso = new Date().toISOString();
 
     try {
-      const snap = await getDoc(userRef);
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', sbUser.id)
+        .maybeSingle();
 
-      if (snap.exists()) {
-        const data = snap.data() as UserProfileData;
+      if (error && error.code !== 'PGRST116') {
+        console.warn('Error fetching Supabase profile:', error.message);
+      }
+
+      if (profile) {
+        // Update last login timestamp quietly
         try {
-          await updateDoc(userRef, { lastLoginAt: nowIso });
+          await supabase
+            .from('profiles')
+            .update({ last_login_at: nowIso })
+            .eq('id', sbUser.id);
         } catch {
           // non-fatal
         }
-        return mapDocToUser(fbUser.uid, data, fbUser.email);
+        return mapRowToUser(profile as UserProfileRow, sbUser.email);
       } else {
-        // Document does not exist yet in Firestore
-        // SECURITY MANDATE: Do NOT provision as Admin or APPROVED.
-        // New profile MUST be strictly PENDING with USER role and no user_id.
-        const newProfile: UserProfileData = {
-          uid: fbUser.uid,
-          name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Forensic Officer'),
-          full_name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'Forensic Officer'),
-          email: fbUser.email || '',
-          mobile_number: '',
+        // Profile does not exist yet. Create default PENDING profile with USER role and NULL user_id.
+        const fullName = sbUser.user_metadata?.full_name || 
+          sbUser.user_metadata?.name || 
+          (sbUser.email ? sbUser.email.split('@')[0] : 'Forensic Officer');
+        const mobile = sbUser.user_metadata?.mobile || '';
+
+        const newProfile: UserProfileRow = {
+          id: sbUser.id,
+          full_name: fullName,
+          email: sbUser.email || '',
+          mobile,
           role: 'USER',
           status: 'PENDING',
           user_id: null,
           created_at: nowIso,
+          updated_at: nowIso,
           approved_at: null,
           approved_by: null,
           rejected_at: null,
           rejected_by: null,
           rejection_reason: null,
-          lastLoginAt: nowIso,
-          avatar: fbUser.photoURL || '',
+          last_login_at: nowIso,
+          avatar: sbUser.user_metadata?.avatar_url || '',
         };
 
-        try {
-          await setDoc(userRef, newProfile);
-        } catch (setErr) {
-          console.warn('Could not set initial profile in Firestore:', setErr);
+        const { error: insertErr } = await supabase
+          .from('profiles')
+          .insert(newProfile);
+
+        if (insertErr) {
+          console.warn('Could not insert initial Supabase profile:', insertErr.message);
         }
 
-        return mapDocToUser(fbUser.uid, newProfile, fbUser.email);
+        return mapRowToUser(newProfile, sbUser.email);
       }
     } catch (err) {
-      console.warn('Firestore profile query failed, using safe unprivileged profile:', err);
-      // Fallback safe unprivileged representation
+      console.warn('Exception during profile synchronization, falling back to safe PENDING profile:', err);
       return {
-        id: fbUser.uid,
-        username: (fbUser.email || 'user').split('@')[0],
-        fullName: fbUser.displayName || 'Forensic Officer',
-        email: fbUser.email || '',
+        id: sbUser.id,
+        username: (sbUser.email || 'officer').split('@')[0],
+        fullName: sbUser.user_metadata?.full_name || 'Forensic Officer',
+        email: sbUser.email || '',
         role: 'USER',
         status: 'PENDING',
         userId: undefined,
         createdAt: nowIso,
         lastLogin: nowIso,
-        isFirebaseUser: true,
+        isSupabaseUser: true,
       };
     }
   }, []);
 
-  // Listen to Firebase auth state changes
+  // Listen to Supabase Auth state changes and session restoration
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      // Avoid racing with an active registration flow
+    let mounted = true;
+
+    if (!isSupabaseConfigured) {
+      setIsLoading(false);
+      return;
+    }
+
+    // Check existing active session on mount
+    supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+      if (!mounted) return;
+      if (error) {
+        console.warn('Failed to retrieve initial Supabase session:', error.message);
+      }
+      if (session?.user) {
+        setSupabaseUser(session.user);
+        try {
+          const appUser = await syncUserProfile(session.user);
+          if (mounted) setCurrentUser(appUser);
+        } catch (syncErr) {
+          console.error('Error syncing initial profile:', syncErr);
+        }
+      }
+      if (mounted) setIsLoading(false);
+    });
+
+    // Subscribe to auth state updates (sign in, sign out, token refresh)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!mounted) return;
       if (isRegisteringRef.current) return;
       if (isSyncingRef.current) return;
       isSyncingRef.current = true;
 
       try {
-        if (fbUser) {
-          setFirebaseUser(fbUser);
-          const appUser = await syncUserProfile(fbUser);
-          setCurrentUser(appUser);
+        if (session?.user) {
+          setSupabaseUser(session.user);
+          const appUser = await syncUserProfile(session.user);
+          if (mounted) setCurrentUser(appUser);
         } else {
-          setFirebaseUser(null);
-          setCurrentUser(null);
+          if (mounted) {
+            setSupabaseUser(null);
+            setCurrentUser(null);
+          }
         }
       } catch (err: unknown) {
-        console.error('Authentication Error in onAuthStateChanged:', err);
-        setAuthError(err instanceof Error ? err.message : 'Authentication verification error.');
-        setCurrentUser(null);
+        console.error('Authentication Error in onAuthStateChange:', err);
+        if (mounted) {
+          setAuthError(err instanceof Error ? err.message : 'Authentication verification error.');
+          setCurrentUser(null);
+        }
       } finally {
-        setIsLoading(false);
+        if (mounted) setIsLoading(false);
         isSyncingRef.current = false;
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, [syncUserProfile]);
 
-  // Refresh current user profile from Firestore (e.g. while pending approval)
+  // Refresh current user profile from Supabase
   const refreshCurrentUser = async () => {
-    if (!auth.currentUser) return;
+    if (!supabaseUser) return;
     try {
-      const updatedUser = await syncUserProfile(auth.currentUser);
-      setCurrentUser(updatedUser);
+      const updated = await syncUserProfile(supabaseUser);
+      setCurrentUser(updated);
     } catch (err) {
       console.warn('Failed to refresh user profile:', err);
     }
@@ -362,15 +400,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Sign In with Email & Password
   const signInWithEmail = async (email: string, pass: string) => {
+    if (!isSupabaseConfigured) {
+      throw new Error(
+        'Supabase is not configured. Please define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in project settings.'
+      );
+    }
+
     setIsLoading(true);
     setAuthError(null);
+
     try {
-      const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
-      const appUser = await syncUserProfile(cred.user);
-      setFirebaseUser(cred.user);
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: pass,
+      });
+
+      if (error) throw error;
+      if (!data.user) throw new Error('Authentication failed: No user returned.');
+
+      const appUser = await syncUserProfile(data.user);
+      setSupabaseUser(data.user);
       setCurrentUser(appUser);
     } catch (err) {
-      const msg = formatFirebaseError(err);
+      const msg = formatSupabaseError(err);
       setAuthError(msg);
       throw new Error(msg);
     } finally {
@@ -386,44 +438,72 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     mobile?: string,
     _requestedRole: UserRole = 'Auditor'
   ) => {
+    if (!isSupabaseConfigured) {
+      throw new Error(
+        'Supabase is not configured. Please define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in project settings.'
+      );
+    }
+
     setIsLoading(true);
     setAuthError(null);
     isRegisteringRef.current = true;
 
     try {
       const trimmedEmail = email.trim();
-      const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, pass);
-      const nowIso = new Date().toISOString();
-      const userRef = doc(db, 'users', cred.user.uid);
+      const trimmedName = name.trim() || trimmedEmail.split('@')[0];
+      const trimmedMobile = mobile?.trim() || '';
 
-      // Mandated: All new registrations start as PENDING with USER role and NO user_id
-      const newProfile: UserProfileData = {
-        uid: cred.user.uid,
-        name: name.trim() || trimmedEmail.split('@')[0],
-        full_name: name.trim() || trimmedEmail.split('@')[0],
+      const { data, error } = await supabase.auth.signUp({
         email: trimmedEmail,
-        mobile_number: mobile?.trim() || '',
-        role: 'USER',
-        status: 'PENDING',
-        user_id: null,
+        password: pass,
+        options: {
+          data: {
+            full_name: trimmedName,
+            name: trimmedName,
+            mobile: trimmedMobile,
+          },
+        },
+      });
+
+      if (error) throw error;
+      if (!data.user) throw new Error('Registration failed: No user returned.');
+
+      const nowIso = new Date().toISOString();
+
+      // Ensure profile row exists in public.profiles with PENDING status, USER role, and NULL user_id
+      const newProfile: UserProfileRow = {
+        id: data.user.id,
+        full_name: trimmedName,
+        email: trimmedEmail,
+        mobile: trimmedMobile,
+        role: 'USER',     // Strict initial role
+        status: 'PENDING', // Strict initial status
+        user_id: null,    // No activated forensic ID
         created_at: nowIso,
+        updated_at: nowIso,
         approved_at: null,
         approved_by: null,
         rejected_at: null,
         rejected_by: null,
         rejection_reason: null,
-        lastLoginAt: nowIso,
+        last_login_at: nowIso,
         avatar: '',
       };
 
-      await setDoc(userRef, newProfile);
+      const { error: insertErr } = await supabase
+        .from('profiles')
+        .insert(newProfile);
 
-      // Keep user signed in as PENDING (Option A) - routed directly to PendingApprovalView
-      const appUser = mapDocToUser(cred.user.uid, newProfile, cred.user.email);
-      setFirebaseUser(cred.user);
+      if (insertErr && !insertErr.message.includes('duplicate key') && !insertErr.message.includes('already exists')) {
+        console.warn('Profile insertion note:', insertErr.message);
+      }
+
+      // Keep user signed in as PENDING - directly routed to PendingApprovalView
+      const appUser = mapRowToUser(newProfile, data.user.email);
+      setSupabaseUser(data.user);
       setCurrentUser(appUser);
     } catch (err) {
-      const msg = formatFirebaseError(err);
+      const msg = formatSupabaseError(err);
       setAuthError(msg);
       throw new Error(msg);
     } finally {
@@ -434,15 +514,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Sign In with Google Federated Identity
   const signInWithGoogle = async () => {
+    if (!isSupabaseConfigured) {
+      throw new Error(
+        'Supabase is not configured. Please define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in project settings.'
+      );
+    }
+
     setIsLoading(true);
     setAuthError(null);
+
     try {
-      const cred = await signInWithPopup(auth, googleProvider);
-      const appUser = await syncUserProfile(cred.user);
-      setFirebaseUser(cred.user);
-      setCurrentUser(appUser);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
+
+      if (error) throw error;
     } catch (err) {
-      const msg = formatFirebaseError(err);
+      const msg = formatSupabaseError(err);
       setAuthError(msg);
       throw new Error(msg);
     } finally {
@@ -450,46 +541,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Password Reset with email enumeration protection
+  // Password Reset with Email Enumeration Protection
   const resetPassword = async (email: string): Promise<string> => {
     const trimmed = email.trim();
     if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
       throw new Error('Please enter a valid email address.');
     }
+
+    if (!isSupabaseConfigured) {
+      throw new Error(
+        'Supabase is not configured. Please define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in project settings.'
+      );
+    }
+
     try {
-      await sendPasswordResetEmail(auth, trimmed);
-      return 'If an account exists for this email address, password reset instructions have been sent.';
-    } catch (err: unknown) {
-      if (typeof err === 'object' && err !== null && 'code' in err) {
-        const code = (err as { code: string }).code;
-        // Email enumeration protection: do not leak whether account exists
-        if (code === 'auth/user-not-found') {
-          return 'If an account exists for this email address, password reset instructions have been sent.';
-        }
-        if (code === 'auth/invalid-email') {
-          throw new Error('Please enter a valid email address format.');
-        }
-        if (code === 'auth/too-many-requests') {
-          throw new Error('Too many password reset requests. Please wait a few minutes before trying again.');
-        }
-        if (code === 'auth/network-request-failed') {
-          throw new Error('Network connection failure. Please check your internet connectivity and try again.');
-        }
+      const { error } = await supabase.auth.resetPasswordForEmail(trimmed, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+
+      if (error) {
+        console.warn('Supabase password reset response:', error.message);
       }
-      const msg = formatFirebaseError(err);
-      throw new Error(msg);
+
+      // Security requirement: Generic message protects against email enumeration
+      return 'If an account exists for this email address, password reset instructions have been sent.';
+    } catch (err) {
+      console.warn('Reset password error:', err);
+      // Even on caught error, return standard privacy-preserving response unless network broke
+      return 'If an account exists for this email address, password reset instructions have been sent.';
     }
   };
 
   // Sign Out
   const signOutUser = async () => {
     try {
-      await firebaseSignOut(auth);
+      if (isSupabaseConfigured) {
+        await supabase.auth.signOut();
+      }
     } catch (e) {
       console.warn('Sign out warning:', e);
     }
     setCurrentUser(null);
-    setFirebaseUser(null);
+    setSupabaseUser(null);
   };
 
   const clearAuthError = () => {
@@ -498,24 +591,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Fetch list of users for Admin User Management View
   const refreshUsersList = async () => {
-    // Security check: Only approved administrators can list users
     const isCallerAdmin = currentUser?.status === 'APPROVED' && 
       (currentUser?.role === 'Admin' || currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPER_ADMIN');
-    if (!isCallerAdmin) {
+    
+    if (!isCallerAdmin || !isSupabaseConfigured) {
       setAllUsers([]);
       return;
     }
 
     setIsLoadingUsers(true);
     try {
-      const snap = await getDocs(collection(db, 'users'));
-      const list: User[] = [];
-      snap.forEach((docSnap) => {
-        const d = docSnap.data() as UserProfileData;
-        list.push(mapDocToUser(docSnap.id, d));
-      });
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*');
 
-      // Sort with PENDING users at the top, then newest registrations
+      if (error) throw error;
+
+      const list: User[] = (data || []).map(row => mapRowToUser(row as UserProfileRow));
+
+      // Sort with PENDING users first, then newest registrations
       list.sort((a, b) => {
         if (a.status === 'PENDING' && b.status !== 'PENDING') return -1;
         if (a.status !== 'PENDING' && b.status === 'PENDING') return 1;
@@ -524,37 +618,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       setAllUsers(list);
     } catch (err) {
-      console.warn('Could not fetch Firestore users:', err);
+      console.warn('Could not fetch Supabase profiles:', err);
     } finally {
       setIsLoadingUsers(false);
     }
   };
 
   // Admin Action: Approve a pending registration
-  const approveUser = async (userId: string, assignedRole: UserRole = 'Auditor'): Promise<string> => {
-    const adminUid = auth.currentUser?.uid;
+  const approveUser = async (
+    userId: string, 
+    assignedRole: UserRole = 'Auditor',
+    customUserId?: string
+  ): Promise<string> => {
+    const adminUid = supabaseUser?.id;
     if (!adminUid) {
-      throw new Error('Administrative authorization required: No authenticated administrator UID.');
+      throw new Error('Administrative authorization required: No authenticated administrator UUID.');
     }
     if (!currentUser || currentUser.status !== 'APPROVED' || (currentUser.role !== 'Admin' && currentUser.role !== 'ADMIN' && currentUser.role !== 'SUPER_ADMIN')) {
       throw new Error('Administrative authorization required: Only verified administrators can approve users.');
     }
 
     const target = allUsers.find(u => u.id === userId);
-    const newUserId = target?.userId || generateForensicUserId();
+    const newUserId = customUserId?.trim() || target?.userId || generateForensicUserId();
     const nowIso = new Date().toISOString();
 
-    const userRef = doc(db, 'users', userId);
-    await updateDoc(userRef, {
-      status: 'APPROVED',
-      role: assignedRole,
-      approved_at: nowIso,
-      approved_by: adminUid,
-      user_id: newUserId,
-      rejected_at: null,
-      rejected_by: null,
-      rejection_reason: null,
-    });
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        status: 'APPROVED',
+        role: assignedRole,
+        approved_at: nowIso,
+        approved_by: adminUid,
+        user_id: newUserId,
+        rejected_at: null,
+        rejected_by: null,
+        rejection_reason: null,
+      })
+      .eq('id', userId);
+
+    if (error) {
+      throw new Error(`Failed to approve user: ${error.message}`);
+    }
 
     setAllUsers(prev => prev.map(u => {
       if (u.id === userId) {
@@ -587,9 +691,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Admin Action: Reject a registration request
   const rejectUser = async (userId: string, reason?: string) => {
-    const adminUid = auth.currentUser?.uid;
+    const adminUid = supabaseUser?.id;
     if (!adminUid) {
-      throw new Error('Administrative authorization required: No authenticated administrator UID.');
+      throw new Error('Administrative authorization required: No authenticated administrator UUID.');
     }
     if (!currentUser || currentUser.status !== 'APPROVED' || (currentUser.role !== 'Admin' && currentUser.role !== 'ADMIN' && currentUser.role !== 'SUPER_ADMIN')) {
       throw new Error('Administrative authorization required: Only verified administrators can reject users.');
@@ -598,13 +702,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const nowIso = new Date().toISOString();
     const finalReason = reason?.trim() || 'Registration request not approved by forensic administrator.';
 
-    const userRef = doc(db, 'users', userId);
-    await updateDoc(userRef, {
-      status: 'REJECTED',
-      rejected_at: nowIso,
-      rejected_by: adminUid,
-      rejection_reason: finalReason,
-    });
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        status: 'REJECTED',
+        rejected_at: nowIso,
+        rejected_by: adminUid,
+        rejection_reason: finalReason,
+      })
+      .eq('id', userId);
+
+    if (error) {
+      throw new Error(`Failed to reject user: ${error.message}`);
+    }
 
     setAllUsers(prev => prev.map(u => {
       if (u.id === userId) {
@@ -632,16 +742,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Admin Action: Update User Role
   const updateUserRole = async (userId: string, newRole: UserRole) => {
-    const adminUid = auth.currentUser?.uid;
+    const adminUid = supabaseUser?.id;
     if (!adminUid) {
-      throw new Error('Administrative authorization required: No authenticated administrator UID.');
+      throw new Error('Administrative authorization required: No authenticated administrator UUID.');
     }
     if (!currentUser || currentUser.status !== 'APPROVED' || (currentUser.role !== 'Admin' && currentUser.role !== 'ADMIN' && currentUser.role !== 'SUPER_ADMIN')) {
       throw new Error('Administrative authorization required: Only verified administrators can modify user roles.');
     }
 
-    const userRef = doc(db, 'users', userId);
-    await updateDoc(userRef, { role: newRole });
+    const { error } = await supabase
+      .from('profiles')
+      .update({ role: newRole })
+      .eq('id', userId);
+
+    if (error) {
+      throw new Error(`Failed to update user role: ${error.message}`);
+    }
+
     setAllUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
     if (currentUser && currentUser.id === userId) {
       setCurrentUser(prev => prev ? { ...prev, role: newRole } : null);
@@ -650,25 +767,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Admin Action: Toggle Active / Disabled
   const toggleUserStatus = async (userId: string, newStatus: 'Active' | 'Disabled') => {
-    const adminUid = auth.currentUser?.uid;
+    const adminUid = supabaseUser?.id;
     if (!adminUid) {
-      throw new Error('Administrative authorization required: No authenticated administrator UID.');
+      throw new Error('Administrative authorization required: No authenticated administrator UUID.');
     }
     if (!currentUser || currentUser.status !== 'APPROVED' || (currentUser.role !== 'Admin' && currentUser.role !== 'ADMIN' && currentUser.role !== 'SUPER_ADMIN')) {
       throw new Error('Administrative authorization required: Only verified administrators can modify account status.');
     }
 
     const statusVal: UserStatus = newStatus === 'Active' ? 'APPROVED' : 'Disabled';
-    const userRef = doc(db, 'users', userId);
-    await updateDoc(userRef, { status: statusVal });
+    const { error } = await supabase
+      .from('profiles')
+      .update({ status: statusVal })
+      .eq('id', userId);
+
+    if (error) {
+      throw new Error(`Failed to toggle account status: ${error.message}`);
+    }
+
     setAllUsers(prev => prev.map(u => u.id === userId ? { ...u, status: statusVal } : u));
   };
 
   // Admin Action: Manually provision pre-approved user
   const provisionUser = async (user: { name: string; email: string; role: UserRole; mobile?: string }) => {
-    const adminUid = auth.currentUser?.uid;
+    const adminUid = supabaseUser?.id;
     if (!adminUid) {
-      throw new Error('Administrative authorization required: No authenticated administrator UID.');
+      throw new Error('Administrative authorization required: No authenticated administrator UUID.');
     }
     if (!currentUser || currentUser.status !== 'APPROVED' || (currentUser.role !== 'Admin' && currentUser.role !== 'ADMIN' && currentUser.role !== 'SUPER_ADMIN')) {
       throw new Error('Administrative authorization required: Only verified administrators can provision users.');
@@ -678,32 +802,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const nowIso = new Date().toISOString();
     const newUserId = generateForensicUserId();
 
-    const newProfile: UserProfileData = {
-      uid: newId,
-      name: user.name,
+    const newProfile: UserProfileRow = {
+      id: newId,
       full_name: user.name,
       email: user.email,
-      mobile_number: user.mobile || '',
+      mobile: user.mobile || '',
       role: user.role,
       status: 'APPROVED',
       user_id: newUserId,
       created_at: nowIso,
+      updated_at: nowIso,
       approved_at: nowIso,
       approved_by: adminUid,
-      lastLoginAt: 'Never',
+      rejected_at: null,
+      rejected_by: null,
+      rejection_reason: null,
+      last_login_at: null,
+      avatar: '',
     };
 
-    const userRef = doc(db, 'users', newId);
-    await setDoc(userRef, newProfile);
+    const { error } = await supabase
+      .from('profiles')
+      .insert(newProfile);
 
-    const newUserObj = mapDocToUser(newId, newProfile);
+    if (error) {
+      throw new Error(`Failed to provision user: ${error.message}`);
+    }
+
+    const newUserObj = mapRowToUser(newProfile);
     setAllUsers(prev => [newUserObj, ...prev]);
   };
 
   // Status & Role calculations
   const role: UserRole = currentUser?.role || 'USER';
   const status: UserStatus = currentUser?.status || 'PENDING';
-  const isAuthenticated = !!currentUser && !!firebaseUser;
+  const isAuthenticated = !!currentUser && !!supabaseUser;
   const isApproved = status === 'APPROVED' || status === 'Active';
   const isAdmin = isApproved && (role === 'Admin' || role === 'ADMIN' || role === 'SUPER_ADMIN');
   const isAuditor = isApproved && (role === 'Auditor');
@@ -742,7 +875,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         currentUser,
-        firebaseUser,
+        supabaseUser,
         isLoading,
         authLoading: isLoading,
         authError,
@@ -753,6 +886,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAdmin,
         isAuditor,
         isViewer,
+        isSupabaseReady: isSupabaseConfigured,
         signInWithEmail,
         signUpWithEmail,
         signInWithGoogle,
