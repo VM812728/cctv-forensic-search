@@ -354,10 +354,10 @@ export const MatchInspectionModal: React.FC<MatchInspectionModalProps> = ({
                         key={idx}
                         onClick={() => setCurrentTimeSec(pm.timestamp_seconds)}
                         className="px-2 py-1 bg-slate-900/80 hover:bg-blue-600/30 border border-white/10 rounded text-[10px] font-mono text-slate-300 cursor-pointer shrink-0 transition-colors"
-                        title={`Frame ${pm.frame_index} @ ${pm.timestamp_seconds.toFixed(2)}s: ${(pm.similarity * 100).toFixed(1)}%`}
+                        title={`Frame ${pm.frame_index} @ ${pm.timestamp_seconds.toFixed(2)}s: ${((pm.similarity ?? pm.similarity_score) * 100).toFixed(1)}%`}
                       >
                         <div>{formatSecondsToTimecode(pm.timestamp_seconds)}</div>
-                        <div className="text-emerald-400 font-bold">{(pm.similarity * 100).toFixed(0)}%</div>
+                        <div className="text-emerald-400 font-bold">{((pm.similarity ?? pm.similarity_score) * 100).toFixed(0)}%</div>
                       </div>
                     ))}
                   </div>

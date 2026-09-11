@@ -82,10 +82,10 @@ export const SystemInfoView: React.FC<SystemInfoViewProps> = ({
             <div>
               <div className="flex justify-between text-slate-400 text-[11px] mb-1.5 font-sans">
                 <span>VRAM Usage:</span>
-                <span className="text-slate-200 font-mono font-bold">{hardware.vramUsedGb.toFixed(1)} / {hardware.vramTotalGb} GB</span>
+                <span className="text-slate-200 font-mono font-bold">{(hardware.vramUsedGb ?? hardware.gpuVramUsedGb ?? 6).toFixed(1)} / {hardware.vramTotalGb ?? hardware.gpuVramTotalGb ?? 24} GB</span>
               </div>
               <div className="h-2 w-full bg-slate-900/80 rounded-full overflow-hidden border border-white/5">
-                <div className="h-full bg-blue-400 rounded-full transition-all shadow-[0_0_10px_rgba(96,165,250,0.5)]" style={{ width: `${(hardware.vramUsedGb / hardware.vramTotalGb) * 100}%` }} />
+                <div className="h-full bg-blue-400 rounded-full transition-all shadow-[0_0_10px_rgba(96,165,250,0.5)]" style={{ width: `${(((hardware.vramUsedGb ?? hardware.gpuVramUsedGb ?? 6)) / (hardware.vramTotalGb ?? hardware.gpuVramTotalGb ?? 24)) * 100}%` }} />
               </div>
             </div>
           </div>
@@ -111,7 +111,7 @@ export const SystemInfoView: React.FC<SystemInfoViewProps> = ({
 
             <div>
               <span className="text-slate-400 text-[11px] block">Concurrency:</span>
-              <span className="text-slate-300">{hardware.cpuThreads} Threads ({hardware.cpuCores} Cores)</span>
+              <span className="text-slate-300">{hardware.cpuThreads || hardware.cpuCores * 2} Threads ({hardware.cpuCores} Cores)</span>
             </div>
 
             <div className="pt-2">

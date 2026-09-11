@@ -17,6 +17,7 @@ import { WebcamModal } from './components/WebcamModal';
 import { LoginView } from './components/LoginView';
 import { PendingApprovalView } from './components/PendingApprovalView';
 import { RejectedAccountView } from './components/RejectedAccountView';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 import { 
@@ -108,6 +109,18 @@ function ForensicWorkstation() {
         clearInterval(searchPollIntervalRef.current);
       }
     };
+  }, []);
+
+  // Listen for global tab navigation events (e.g. from ErrorBoundary or subviews)
+  useEffect(() => {
+    const handleNavigate = (e: Event) => {
+      const customEvent = e as CustomEvent<NavTab>;
+      if (customEvent.detail) {
+        setActiveTab(customEvent.detail);
+      }
+    };
+    window.addEventListener('cctv:navigate-tab', handleNavigate);
+    return () => window.removeEventListener('cctv:navigate-tab', handleNavigate);
   }, []);
 
   // Security Toast State for Blocked Operations
@@ -709,106 +722,112 @@ function ForensicWorkstation() {
           onLogout={signOutUser}
         />
 
-        {/* Center Content View Area */}
+        {/* Center Content View Area with Global Forensic Error Boundary */}
         <main className="flex-1 bg-slate-950/40 backdrop-blur-sm overflow-hidden flex flex-col relative z-0">
-          {activeTab === 'dashboard' && (
-            <DashboardView
-              cases={cases}
-              activeJobs={activeJobs}
-              onSelectCase={(id) => {
-                setActiveCaseId(id);
-                setActiveTab('search_results');
-              }}
-              onNavigateTab={setActiveTab}
-              onOpenQuickDemo={handleLoadQuickDemo}
-              onOpenBenchmark={() => setShowBenchmarkModal(true)}
-              systemHardware={INITIAL_HARDWARE}
-            />
-          )}
+          <ErrorBoundary fallbackSectionName={activeTab} onReset={() => setActiveTab('dashboard')}>
+            {activeTab === 'dashboard' && (
+              <DashboardView
+                cases={cases}
+                activeJobs={activeJobs}
+                onSelectCase={(id) => {
+                  setActiveCaseId(id);
+                  setActiveTab('cases');
+                }}
+                onNavigateTab={setActiveTab}
+                onOpenQuickDemo={handleLoadQuickDemo}
+                onOpenBenchmark={() => setShowBenchmarkModal(true)}
+                systemHardware={INITIAL_HARDWARE}
+              />
+            )}
 
-          {activeTab === 'new_search' && (
-            <NewSearchView
-              onStartSearch={handleStartSearch}
-              availableVideos={availableVideos}
-              settings={settings}
-              onOpenWebcam={(cb) => setWebcamCallback(() => cb)}
-            />
-          )}
+            {activeTab === 'new_search' && (
+              <NewSearchView
+                onStartSearch={handleStartSearch}
+                availableVideos={availableVideos}
+                settings={settings}
+                onOpenWebcam={(cb) => setWebcamCallback(() => cb)}
+              />
+            )}
 
-          {activeTab === 'cctv_index' && (
-            <CCTVIndexingView
-              videos={availableVideos}
-              onIndexVideo={handleIndexVideo}
-              onBulkIndex={handleBulkIndex}
-              onDeleteIndex={handleDeleteIndex}
-              onUploadVideo={handleUploadVideo}
-              onDeleteVideo={handleDeleteVideo}
-            />
-          )}
+            {activeTab === 'cctv_index' && (
+              <CCTVIndexingView
+                videos={availableVideos}
+                onIndexVideo={handleIndexVideo}
+                onBulkIndex={handleBulkIndex}
+                onDeleteIndex={handleDeleteIndex}
+                onUploadVideo={handleUploadVideo}
+                onDeleteVideo={handleDeleteVideo}
+              />
+            )}
 
-          {activeTab === 'search_results' && (
-            <SearchResultsView
-              currentCase={currentCase}
-              matches={caseMatches}
-              onConfirmMatch={handleConfirmMatch}
-              onRejectMatch={handleRejectMatch}
-              onGenerateClip={handleGenerateClip}
-              onGenerateAllConfirmedClips={handleGenerateAllConfirmedClips}
-              settings={settings}
-              onExportReport={() => {
-                if (currentCase) {
-                  generatePdfReport(currentCase, currentCase.candidate!, caseMatches, caseClips);
-                }
-              }}
-            />
-          )}
+            {activeTab === 'search_results' && (
+              <SearchResultsView
+                currentCase={currentCase}
+                matches={caseMatches}
+                onConfirmMatch={handleConfirmMatch}
+                onRejectMatch={handleRejectMatch}
+                onGenerateClip={handleGenerateClip}
+                onGenerateAllConfirmedClips={handleGenerateAllConfirmedClips}
+                settings={settings}
+                onExportReport={() => {
+                  if (currentCase) {
+                    generatePdfReport(currentCase, currentCase.candidate!, caseMatches, caseClips);
+                  }
+                }}
+              />
+            )}
 
-          {activeTab === 'clips' && (
-            <ClipsEvidenceView
-              currentCase={currentCase}
-              clips={allClips}
-            />
-          )}
+            {(activeTab === 'clips' || activeTab === 'evidence') && (
+              <ClipsEvidenceView
+                currentCase={currentCase}
+                clips={allClips}
+              />
+            )}
 
-          {activeTab === 'reports' && (
-            <ReportsView
-              currentCase={currentCase}
-              matches={caseMatches}
-              clips={caseClips}
-            />
-          )}
+            {activeTab === 'reports' && (
+              <ReportsView
+                currentCase={currentCase}
+                matches={caseMatches}
+                clips={caseClips}
+              />
+            )}
 
-          {activeTab === 'cases' && (
-            <CasesView
-              cases={cases}
-              currentCase={currentCase}
-              onSelectCase={setActiveCaseId}
-              onNavigateTab={setActiveTab}
-              onDeleteCase={handleDeleteCase}
-            />
-          )}
+            {activeTab === 'cases' && (
+              <CasesView
+                cases={cases}
+                currentCase={currentCase}
+                onSelectCase={setActiveCaseId}
+                onNavigateTab={setActiveTab}
+                onDeleteCase={handleDeleteCase}
+                matches={allMatches}
+                clips={allClips}
+                videos={availableVideos}
+                auditLogs={auditLogs}
+                onConfirmMatch={handleConfirmMatch}
+                onRejectMatch={handleRejectMatch}
+                onGenerateClip={handleGenerateClip}
+              />
+            )}
 
-          {activeTab === 'users' && (
-            <UserManagementView />
-          )}
+            {activeTab === 'users' && (
+              <UserManagementView />
+            )}
 
-          {activeTab === 'audit_logs' && (
-            <AuditLogView logs={auditLogs} />
-          )}
+            {activeTab === 'audit_logs' && (
+              <AuditLogView logs={auditLogs} />
+            )}
 
-          {activeTab === 'system_info' && (
-            <SystemInfoView
-              hardware={INITIAL_HARDWARE}
-              onOpenBenchmark={() => setShowBenchmarkModal(true)}
-            />
-          )}
-
-          {activeTab === 'settings' && (
-            <SettingsView
-              settings={settings}
-              onSaveSettings={handleSaveSettings}
-            />
-          )}
+            {(activeTab === 'settings' || activeTab === 'system_info') && (
+              <SettingsView
+                settings={settings}
+                onSaveSettings={handleSaveSettings}
+                initialSection={activeTab === 'system_info' ? 'system_health' : 'system_health'}
+                systemHardware={INITIAL_HARDWARE}
+                onOpenBenchmark={() => setShowBenchmarkModal(true)}
+                onNavigateTab={setActiveTab}
+              />
+            )}
+          </ErrorBoundary>
         </main>
       </div>
 

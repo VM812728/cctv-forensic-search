@@ -92,7 +92,7 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({
             </div>
             <div className="flex justify-between text-slate-300">
               <span>CPU Threads:</span>
-              <span className="text-slate-100">{systemHardware.cpuThreads} Threads</span>
+              <span className="text-slate-100">{systemHardware.cpuThreads || (systemHardware.cpuCores ? systemHardware.cpuCores * 2 : 16)} Threads</span>
             </div>
           </div>
 

@@ -22,13 +22,17 @@ export interface User {
 }
 
 export type CaseStatus = 
+  | 'Draft'
+  | 'Processing'
+  | 'Under Review'
+  | 'Evidence Ready'
+  | 'Completed'
+  | 'Archived'
   | 'Created'
   | 'Indexing'
   | 'Searching'
   | 'Review Required'
-  | 'Completed'
-  | 'Exported'
-  | 'Archived';
+  | 'Exported';
 
 export interface BoundingBoxCoordinates {
   x: number;
@@ -258,6 +262,7 @@ export interface RawFaceMatchApiItem {
   frame_index: number;
   timestamp_seconds: number;
   similarity_score: number;
+  similarity?: number;
   confidence_band: string;
   bounding_box: BoundingBoxCoordinates;
   face_index?: number;
@@ -422,6 +427,11 @@ export interface ClipEvidence {
   candidateRoll: string;
   fileSizeBytes?: number;
   extractionMethod?: string;
+  evidenceId?: string;
+  status?: 'Generated' | 'Verified' | 'Sealed' | 'Review Required' | 'Failed';
+  sealedAt?: string;
+  sealedBy?: string;
+  integrityStatus?: 'BIT_EXACT' | 'VERIFIED' | 'TAMPERED';
 }
 
 
@@ -475,6 +485,7 @@ export interface AuditLog {
   username: string;
   action: string;
   details: string;
+  target?: string;
   caseId?: string;
   caseCode?: string;
   timestamp: string;
@@ -512,6 +523,7 @@ export interface AppSettings {
 export interface SystemHardwareInfo {
   cpuModel: string;
   cpuCores: number;
+  cpuThreads?: number;
   cpuUsagePercent: number;
   ramTotalGb: number;
   ramUsedGb: number;
@@ -519,6 +531,8 @@ export interface SystemHardwareInfo {
   gpuName: string;
   gpuVramTotalGb: number;
   gpuVramUsedGb: number;
+  vramTotalGb?: number;
+  vramUsedGb?: number;
   gpuUsagePercent: number;
   cudaAvailable: boolean;
   cudaVersion: string;
